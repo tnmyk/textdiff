@@ -15,3 +15,9 @@ web-sys = "0.3"
 
 [dev-dependencies]
 similar = "3.0"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true
