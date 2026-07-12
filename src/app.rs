@@ -1,4 +1,4 @@
-use eframe::egui::{self};
+use eframe::egui::{self, Button, CentralPanel, RichText};
 
 use crate::ui::{compare_results::CompareResults, input::Input};
 
@@ -21,7 +21,7 @@ impl TextDiffApp {
 
 impl eframe::App for TextDiffApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
+        CentralPanel::default().show(ui, |ui| {
             crate::ui::header::render(ui);
             ui.add_space(16.0);
             
@@ -34,7 +34,7 @@ impl eframe::App for TextDiffApp {
                 ui.add_space(20.0);
                 let compare_btn = ui.add_sized(
                     [200.0, 40.0],
-                    egui::Button::new(egui::RichText::new("Compare").size(18.0).strong()),
+                    Button::new(RichText::new("Compare").size(18.0).strong()),
                 );
                 
                 if compare_btn.clicked() {
