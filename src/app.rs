@@ -1,8 +1,18 @@
 use eframe::egui::{self, Button, CentralPanel, RichText};
 
-use crate::ui::{
-    app_mode::AppMode, compare_results::CompareResults, example::render_example, input::Input,
-};
+use crate::ui::{compare_results::CompareResults, example::render_example, input::Input};
+
+#[derive(PartialEq)]
+pub enum AppMode {
+    Edit,
+    Diff,
+}
+
+impl Default for AppMode {
+    fn default() -> Self {
+        Self::Edit
+    }
+}
 
 #[derive(Default)]
 pub struct TextDiffApp {
@@ -25,6 +35,7 @@ impl TextDiffApp {
 
 impl eframe::App for TextDiffApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::ui::theme::apply_theme(ui.ctx());
         CentralPanel::default().show(ui, |ui| {
             crate::ui::header::render(ui);
             ui.add_space(16.0);
@@ -49,8 +60,7 @@ impl eframe::App for TextDiffApp {
                             );
 
                             if compare_btn.clicked() {
-                                self.result
-                                    .compare(&self.input1.text, &self.input2.text, ui);
+                                self.result.compare(&self.input1.text, &self.input2.text, ui);
                                 self.mode = AppMode::Diff;
                             }
 
@@ -60,6 +70,7 @@ impl eframe::App for TextDiffApp {
                         });
                     });
                 } else {
+                    // Diff Mode
                     ui.horizontal(|ui| {
                         let back_btn = ui.add_sized(
                             [200.0, 40.0],

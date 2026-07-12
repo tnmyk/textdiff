@@ -32,20 +32,25 @@ impl CompareResults {
                 .inner_margin(12.0)
                 .show(ui, |ui| {
                     let inner_height = ui.available_height();
+                    let title_color = ui.visuals().text_color();
                     ui.columns(2, |cols| {
                         // Left Column (Original)
+                        cols[0].label(RichText::new("Original Text").strong().color(title_color));
+                        cols[0].add_space(4.0);
                         let left_resp = ScrollArea::vertical()
                             .id_salt("left_scroll")
-                            .max_height(inner_height)
+                            .max_height(inner_height - 24.0)
                             .vertical_scroll_offset(self.scroll_offset)
                             .show(&mut cols[0], |ui| {
                                 ui.label(job_left.clone());
                             });
 
                         // Right Column (Modified)
+                        cols[1].label(RichText::new("Modified Text").strong().color(title_color));
+                        cols[1].add_space(4.0);
                         let right_resp = ScrollArea::vertical()
                             .id_salt("right_scroll")
-                            .max_height(inner_height)
+                            .max_height(inner_height - 24.0)
                             .vertical_scroll_offset(self.scroll_offset)
                             .show(&mut cols[1], |ui| {
                                 ui.label(job_right.clone());
