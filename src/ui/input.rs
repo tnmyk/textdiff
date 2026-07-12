@@ -11,7 +11,9 @@ impl Input {
     }
 
     pub fn render(&mut self, ui: &mut eframe::egui::Ui, label: &str) {
-        ui.label(label);
-        ui.text_edit_multiline(&mut self.text);
+        ui.vertical(|ui| {
+            ui.label(label);
+            ui.text_edit_multiline(&mut self.text);
+        });
     }
 }
