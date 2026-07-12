@@ -36,6 +36,19 @@ impl TextDiffApp {
 impl eframe::App for TextDiffApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         crate::ui::theme::apply_theme(ui.ctx());
+
+        egui::Panel::bottom("footer").show(ui, |ui| {
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("🔒 All data is processed entirely in your browser and never leaves your device.")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(120, 120, 120)),
+                );
+            });
+            ui.add_space(1.0);
+        });
+
         CentralPanel::default().show(ui, |ui| {
             crate::ui::header::render(ui);
             ui.add_space(16.0);
@@ -50,13 +63,13 @@ impl eframe::App for TextDiffApp {
                     ui.add_space(20.0);
 
                     ui.horizontal(|ui| {
-                        let estimated_total_width = 330.0;
+                        let estimated_total_width = 250.0;
                         ui.add_space((ui.available_width() - estimated_total_width) / 2.0);
 
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             let compare_btn = ui.add_sized(
-                                [200.0, 40.0],
-                                Button::new(RichText::new("Compare").size(18.0).strong()),
+                                [120.0, 32.0],
+                                Button::new(RichText::new("Compare").size(15.0).strong()),
                             );
 
                             if compare_btn.clicked() {
@@ -73,8 +86,8 @@ impl eframe::App for TextDiffApp {
                     // Diff Mode
                     ui.horizontal(|ui| {
                         let back_btn = ui.add_sized(
-                            [200.0, 40.0],
-                            Button::new(RichText::new("Back to Edit").size(18.0).strong()),
+                            [120.0, 32.0],
+                            Button::new(RichText::new("Back to Edit").size(15.0).strong()),
                         );
                         if back_btn.clicked() {
                             self.mode = AppMode::Edit;

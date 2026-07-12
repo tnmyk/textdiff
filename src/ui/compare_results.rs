@@ -77,10 +77,10 @@ impl CompareResults {
         let diff = similar::TextDiff::from_lines(text1, text2);
 
         let text_color = ui.visuals().text_color();
-        let light_red = Color32::from_rgb(60, 20, 20);
-        let dark_red = Color32::from_rgb(180, 50, 50);
-        let light_green = Color32::from_rgb(20, 60, 20);
-        let dark_green = Color32::from_rgb(50, 180, 50);
+        let light_red = Color32::from_rgb(72, 42, 43); // #482A2B
+        let dark_red = Color32::from_rgb(120, 29, 32); // #781D20
+        let light_green = Color32::from_rgb(41, 68, 54); // #294436
+        let dark_green = Color32::from_rgb(31, 97, 62); // #1F613E
         let transparent = Color32::TRANSPARENT;
 
         job_left.wrap = text::TextWrapping {
