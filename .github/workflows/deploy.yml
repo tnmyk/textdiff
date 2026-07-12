@@ -28,6 +28,13 @@ jobs:
       - name: Build WebAssembly
         run: trunk build --release
 
+      - name: Optimize WASM Size
+        run: |
+          npm install -g wasm-opt
+          for file in dist/*.wasm; do
+            npx wasm-opt -Oz --enable-bulk-memory -o "$file" "$file"
+          done
+
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
