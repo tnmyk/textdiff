@@ -1,33 +1,33 @@
 use eframe::egui::{self, Button, CentralPanel, RichText};
 
-use crate::ui::{compare_results::CompareResults, example::render_example, input::Input};
+use crate::ui::{
+    compare_results::CompareResults,
+    example::{ExampleAction, render_example},
+    input::Input,
+    theme,
+};
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Default)]
 pub enum AppMode {
+    #[default]
     Edit,
     Diff,
 }
 
-impl Default for AppMode {
-    fn default() -> Self {
-        Self::Edit
-    }
-}
-
-#[derive(Default)]
 pub struct TextDiffApp {
-    pub mode: AppMode,
-    pub input1: Input,
-    pub input2: Input,
-    pub result: CompareResults,
+    mode: AppMode,
+    input1: Input,
+    input2: Input,
+    result: CompareResults,
 }
 
 impl TextDiffApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::apply_theme(&cc.egui_ctx);
         Self {
             mode: AppMode::Edit,
-            input1: Input::new(),
-            input2: Input::new(),
+            input1: Input::default(),
+            input2: Input::default(),
             result: CompareResults::default(),
         }
     }
@@ -35,8 +35,6 @@ impl TextDiffApp {
 
 impl eframe::App for TextDiffApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        crate::ui::theme::apply_theme(ui.ctx());
-
         egui::Panel::bottom("footer").show(ui, |ui| {
             ui.add_space(8.0);
             ui.vertical_centered(|ui| {
@@ -63,9 +61,8 @@ impl eframe::App for TextDiffApp {
                     ui.add_space(20.0);
 
                     ui.horizontal(|ui| {
-                        let estimated_total_width = 250.0;
-                        ui.add_space((ui.available_width() - estimated_total_width) / 2.0);
-
+                        let group_width = 250.0;
+                        ui.add_space((ui.available_width() - group_width) / 2.0);
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             let compare_btn = ui.add_sized(
                                 [120.0, 32.0],
@@ -73,13 +70,21 @@ impl eframe::App for TextDiffApp {
                             );
 
                             if compare_btn.clicked() {
-                                self.result.compare(&self.input1.text, &self.input2.text, ui);
+                                // Extract color before mutably borrowing self.result.
+                                let text_color = ui.visuals().text_color();
+                                self.result.compare(&self.input1.text, &self.input2.text, text_color);
                                 self.mode = AppMode::Diff;
                             }
 
                             ui.add_space(10.0);
 
-                            render_example(self, ui);
+                            match render_example(ui) {
+                                ExampleAction::LoadExample => {
+                                    self.input1.text = "This is an example of the original text.\nIt has multiple lines.\nThis line will be deleted.".to_string();
+                                    self.input2.text = "This is an example of the modified text.\nIt has multiple lines.\nThis line will be added.".to_string();
+                                }
+                                ExampleAction::None => {}
+                            }
                         });
                     });
                 } else {

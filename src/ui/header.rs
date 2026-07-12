@@ -20,7 +20,7 @@ pub fn render(ui: &mut egui::Ui) {
                 ui.add_space(8.0);
                 if ui.link("Github").clicked() {
                     ui.ctx().open_url(OpenUrl::new_tab(
-                        "https://github.com/tanmaykachroo/textdiff",
+                        "https://github.com/tnmyk/diff",
                     ));
                 }
             });

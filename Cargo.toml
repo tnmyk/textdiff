@@ -14,10 +14,9 @@ wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 
 [dev-dependencies]
-similar = "3.0"
 
 [profile.release]
 opt-level = "z"
-lto = "thin"
+lto = true
 strip = true
 panic = "abort"

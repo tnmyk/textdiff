@@ -56,18 +56,21 @@ impl CompareResults {
                                 ui.label(job_right.clone());
                             });
 
-                        // Synchronize scrolling
-                        if left_resp.state.offset.y != self.scroll_offset {
-                            self.scroll_offset = left_resp.state.offset.y;
-                        } else if right_resp.state.offset.y != self.scroll_offset {
-                            self.scroll_offset = right_resp.state.offset.y;
+                        // Synchronize scrolling: prefer the panel the user actually moved.
+                        let left_off = left_resp.state.offset.y;
+                        let right_off = right_resp.state.offset.y;
+                        if left_off != self.scroll_offset {
+                            self.scroll_offset = left_off;
+                        } else if right_off != self.scroll_offset {
+                            self.scroll_offset = right_off;
                         }
                     });
                 });
         }
     }
 
-    pub fn compare(&mut self, text1: &str, text2: &str, ui: &mut egui::Ui) {
+    /// `text_color` is passed in so this method has no dependency on `egui::Ui`.
+    pub fn compare(&mut self, text1: &str, text2: &str, text_color: Color32) {
         self.job_left = None;
         self.job_right = None;
         self.scroll_offset = 0.0;
@@ -76,11 +79,10 @@ impl CompareResults {
         let mut job_right = text::LayoutJob::default();
         let diff = similar::TextDiff::from_lines(text1, text2);
 
-        let text_color = ui.visuals().text_color();
-        let light_red = Color32::from_rgb(72, 42, 43); // #482A2B
-        let dark_red = Color32::from_rgb(120, 29, 32); // #781D20
-        let light_green = Color32::from_rgb(41, 68, 54); // #294436
-        let dark_green = Color32::from_rgb(31, 97, 62); // #1F613E
+        let light_red = Color32::from_rgb(72, 42, 43);
+        let dark_red = Color32::from_rgb(120, 29, 32);
+        let light_green = Color32::from_rgb(41, 68, 54);
+        let dark_green = Color32::from_rgb(31, 97, 62);
         let transparent = Color32::TRANSPARENT;
 
         job_left.wrap = text::TextWrapping {
@@ -95,25 +97,27 @@ impl CompareResults {
         for op in diff.ops() {
             match op {
                 similar::DiffOp::Replace { .. } => {
-                    let mut deleted_lines = Vec::new();
-                    let mut inserted_lines = Vec::new();
+                    let mut del_count = 0usize;
+                    let mut ins_count = 0usize;
                     let mut deleted_str = String::new();
                     let mut inserted_str = String::new();
 
                     for change in diff.iter_changes(op) {
                         if change.tag() == similar::ChangeTag::Delete {
-                            deleted_lines.push(change.value());
+                            del_count += 1;
                             deleted_str.push_str(change.value());
                         } else if change.tag() == similar::ChangeTag::Insert {
-                            inserted_lines.push(change.value());
+                            ins_count += 1;
                             inserted_str.push_str(change.value());
                         }
                     }
 
                     let word_diff = similar::TextDiff::from_words(&deleted_str, &inserted_str);
+                    // Collect once to avoid iterating the diff twice.
+                    let word_changes: Vec<_> = word_diff.iter_all_changes().collect();
 
                     // Render left side (Deletions)
-                    for change in word_diff.iter_all_changes() {
+                    for change in &word_changes {
                         match change.tag() {
                             similar::ChangeTag::Delete => {
                                 job_left.append(
@@ -144,7 +148,7 @@ impl CompareResults {
                     }
 
                     // Render right side (Insertions)
-                    for change in word_diff.iter_all_changes() {
+                    for change in &word_changes {
                         match change.tag() {
                             similar::ChangeTag::Insert => {
                                 job_right.append(
@@ -174,10 +178,7 @@ impl CompareResults {
                         }
                     }
 
-                    // Pad missing lines to keep vertical sync
-                    let del_count = deleted_lines.len();
-                    let ins_count = inserted_lines.len();
-
+                    // Pad the shorter side with blank lines to keep vertical alignment.
                     if del_count < ins_count {
                         for _ in 0..(ins_count - del_count) {
                             job_left.append(
@@ -207,9 +208,9 @@ impl CompareResults {
                     }
                 }
                 similar::DiffOp::Delete { .. } => {
-                    let mut lines_count = 0;
-                    for change in diff.iter_changes(op) {
-                        lines_count += 1;
+                    let changes: Vec<_> = diff.iter_changes(op).collect();
+                    let lines_count = changes.len();
+                    for change in &changes {
                         job_left.append(
                             change.value(),
                             0.0,
@@ -235,9 +236,9 @@ impl CompareResults {
                     }
                 }
                 similar::DiffOp::Insert { .. } => {
-                    let mut lines_count = 0;
-                    for change in diff.iter_changes(op) {
-                        lines_count += 1;
+                    let changes: Vec<_> = diff.iter_changes(op).collect();
+                    let lines_count = changes.len();
+                    for change in &changes {
                         job_right.append(
                             change.value(),
                             0.0,
@@ -264,26 +265,14 @@ impl CompareResults {
                 }
                 similar::DiffOp::Equal { .. } => {
                     for change in diff.iter_changes(op) {
-                        job_left.append(
-                            change.value(),
-                            0.0,
-                            text::TextFormat {
-                                font_id: FontId::monospace(14.0),
-                                color: text_color,
-                                background: transparent,
-                                ..Default::default()
-                            },
-                        );
-                        job_right.append(
-                            change.value(),
-                            0.0,
-                            text::TextFormat {
-                                font_id: FontId::monospace(14.0),
-                                color: text_color,
-                                background: transparent,
-                                ..Default::default()
-                            },
-                        );
+                        let fmt = text::TextFormat {
+                            font_id: FontId::monospace(14.0),
+                            color: text_color,
+                            background: transparent,
+                            ..Default::default()
+                        };
+                        job_left.append(change.value(), 0.0, fmt.clone());
+                        job_right.append(change.value(), 0.0, fmt);
                     }
                 }
             }
