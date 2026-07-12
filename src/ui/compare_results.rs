@@ -2,21 +2,28 @@ use eframe::egui::{
     self, Color32, FontId, Frame, RichText, ScrollArea,
     text::{self, LayoutJob},
 };
-#[derive(Default)]
 
 pub struct CompareResults {
-    pub job: Option<LayoutJob>,
+    pub job_left: Option<LayoutJob>,
+    pub job_right: Option<LayoutJob>,
+    pub scroll_offset: f32,
+}
+
+impl Default for CompareResults {
+    fn default() -> Self {
+        Self {
+            job_left: None,
+            job_right: None,
+            scroll_offset: 0.0,
+        }
+    }
 }
 
 impl CompareResults {
-    pub fn new(job: LayoutJob) -> Self {
-        Self { job: Some(job) }
-    }
-
-    pub fn render(&self, ui: &mut egui::Ui) {
-        if let Some(ref job) = self.job {
+    pub fn render(&mut self, ui: &mut egui::Ui) {
+        if let (Some(job_left), Some(job_right)) = (&self.job_left, &self.job_right) {
             ui.add_space(10.0);
-            ui.label(RichText::new("Differences:").heading());
+            ui.label(RichText::new("Side-by-Side Differences:").heading());
             ui.add_space(5.0);
 
             Frame::new()
@@ -24,20 +31,44 @@ impl CompareResults {
                 .corner_radius(8.0)
                 .inner_margin(12.0)
                 .show(ui, |ui| {
-                    ScrollArea::vertical()
-                        .max_height(400.0)
-                        .auto_shrink([false; 2])
-                        .show(ui, |ui| {
-                            ui.label(job.clone());
-                        });
+                    let inner_height = ui.available_height();
+                    ui.columns(2, |cols| {
+                        // Left Column (Original)
+                        let left_resp = ScrollArea::vertical()
+                            .id_salt("left_scroll")
+                            .max_height(inner_height)
+                            .vertical_scroll_offset(self.scroll_offset)
+                            .show(&mut cols[0], |ui| {
+                                ui.label(job_left.clone());
+                            });
+
+                        // Right Column (Modified)
+                        let right_resp = ScrollArea::vertical()
+                            .id_salt("right_scroll")
+                            .max_height(inner_height)
+                            .vertical_scroll_offset(self.scroll_offset)
+                            .show(&mut cols[1], |ui| {
+                                ui.label(job_right.clone());
+                            });
+
+                        // Synchronize scrolling
+                        if left_resp.state.offset.y != self.scroll_offset {
+                            self.scroll_offset = left_resp.state.offset.y;
+                        } else if right_resp.state.offset.y != self.scroll_offset {
+                            self.scroll_offset = right_resp.state.offset.y;
+                        }
+                    });
                 });
         }
     }
 
     pub fn compare(&mut self, text1: &str, text2: &str, ui: &mut egui::Ui) {
-        self.job = None;
+        self.job_left = None;
+        self.job_right = None;
+        self.scroll_offset = 0.0;
 
-        let mut job = text::LayoutJob::default();
+        let mut job_left = text::LayoutJob::default();
+        let mut job_right = text::LayoutJob::default();
         let diff = similar::TextDiff::from_lines(text1, text2);
 
         let text_color = ui.visuals().text_color();
@@ -45,27 +76,42 @@ impl CompareResults {
         let dark_red = Color32::from_rgb(180, 50, 50);
         let light_green = Color32::from_rgb(20, 60, 20);
         let dark_green = Color32::from_rgb(50, 180, 50);
+        let transparent = Color32::TRANSPARENT;
+
+        job_left.wrap = text::TextWrapping {
+            max_width: f32::INFINITY,
+            ..Default::default()
+        };
+        job_right.wrap = text::TextWrapping {
+            max_width: f32::INFINITY,
+            ..Default::default()
+        };
 
         for op in diff.ops() {
             match op {
                 similar::DiffOp::Replace { .. } => {
-                    let mut deleted = String::new();
-                    let mut inserted = String::new();
+                    let mut deleted_lines = Vec::new();
+                    let mut inserted_lines = Vec::new();
+                    let mut deleted_str = String::new();
+                    let mut inserted_str = String::new();
+
                     for change in diff.iter_changes(op) {
                         if change.tag() == similar::ChangeTag::Delete {
-                            deleted.push_str(change.value());
+                            deleted_lines.push(change.value());
+                            deleted_str.push_str(change.value());
                         } else if change.tag() == similar::ChangeTag::Insert {
-                            inserted.push_str(change.value());
+                            inserted_lines.push(change.value());
+                            inserted_str.push_str(change.value());
                         }
                     }
 
-                    let word_diff = similar::TextDiff::from_words(&deleted, &inserted);
+                    let word_diff = similar::TextDiff::from_words(&deleted_str, &inserted_str);
 
-                    // Render deleted line(s)
+                    // Render left side (Deletions)
                     for change in word_diff.iter_all_changes() {
                         match change.tag() {
                             similar::ChangeTag::Delete => {
-                                job.append(
+                                job_left.append(
                                     change.value(),
                                     0.0,
                                     text::TextFormat {
@@ -77,7 +123,7 @@ impl CompareResults {
                                 );
                             }
                             similar::ChangeTag::Equal => {
-                                job.append(
+                                job_left.append(
                                     change.value(),
                                     0.0,
                                     text::TextFormat {
@@ -92,11 +138,11 @@ impl CompareResults {
                         }
                     }
 
-                    // Render inserted line(s)
+                    // Render right side (Insertions)
                     for change in word_diff.iter_all_changes() {
                         match change.tag() {
                             similar::ChangeTag::Insert => {
-                                job.append(
+                                job_right.append(
                                     change.value(),
                                     0.0,
                                     text::TextFormat {
@@ -108,7 +154,7 @@ impl CompareResults {
                                 );
                             }
                             similar::ChangeTag::Equal => {
-                                job.append(
+                                job_right.append(
                                     change.value(),
                                     0.0,
                                     text::TextFormat {
@@ -122,21 +168,114 @@ impl CompareResults {
                             similar::ChangeTag::Delete => {}
                         }
                     }
+
+                    // Pad missing lines to keep vertical sync
+                    let del_count = deleted_lines.len();
+                    let ins_count = inserted_lines.len();
+
+                    if del_count < ins_count {
+                        for _ in 0..(ins_count - del_count) {
+                            job_left.append(
+                                "\n",
+                                0.0,
+                                text::TextFormat {
+                                    font_id: FontId::monospace(14.0),
+                                    color: transparent,
+                                    background: transparent,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    } else if ins_count < del_count {
+                        for _ in 0..(del_count - ins_count) {
+                            job_right.append(
+                                "\n",
+                                0.0,
+                                text::TextFormat {
+                                    font_id: FontId::monospace(14.0),
+                                    color: transparent,
+                                    background: transparent,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    }
                 }
-                _ => {
+                similar::DiffOp::Delete { .. } => {
+                    let mut lines_count = 0;
                     for change in diff.iter_changes(op) {
-                        let (color, bg_color) = match change.tag() {
-                            similar::ChangeTag::Delete => (text_color, light_red),
-                            similar::ChangeTag::Insert => (text_color, light_green),
-                            similar::ChangeTag::Equal => (text_color, Color32::TRANSPARENT),
-                        };
-                        job.append(
+                        lines_count += 1;
+                        job_left.append(
                             change.value(),
                             0.0,
                             text::TextFormat {
                                 font_id: FontId::monospace(14.0),
-                                color,
-                                background: bg_color,
+                                color: text_color,
+                                background: light_red,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    for _ in 0..lines_count {
+                        job_right.append(
+                            "\n",
+                            0.0,
+                            text::TextFormat {
+                                font_id: FontId::monospace(14.0),
+                                color: transparent,
+                                background: transparent,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+                similar::DiffOp::Insert { .. } => {
+                    let mut lines_count = 0;
+                    for change in diff.iter_changes(op) {
+                        lines_count += 1;
+                        job_right.append(
+                            change.value(),
+                            0.0,
+                            text::TextFormat {
+                                font_id: FontId::monospace(14.0),
+                                color: text_color,
+                                background: light_green,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    for _ in 0..lines_count {
+                        job_left.append(
+                            "\n",
+                            0.0,
+                            text::TextFormat {
+                                font_id: FontId::monospace(14.0),
+                                color: transparent,
+                                background: transparent,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+                similar::DiffOp::Equal { .. } => {
+                    for change in diff.iter_changes(op) {
+                        job_left.append(
+                            change.value(),
+                            0.0,
+                            text::TextFormat {
+                                font_id: FontId::monospace(14.0),
+                                color: text_color,
+                                background: transparent,
+                                ..Default::default()
+                            },
+                        );
+                        job_right.append(
+                            change.value(),
+                            0.0,
+                            text::TextFormat {
+                                font_id: FontId::monospace(14.0),
+                                color: text_color,
+                                background: transparent,
                                 ..Default::default()
                             },
                         );
@@ -145,6 +284,7 @@ impl CompareResults {
             }
         }
 
-        self.job = Some(job);
+        self.job_left = Some(job_left);
+        self.job_right = Some(job_right);
     }
 }
