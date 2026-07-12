@@ -1,4 +1,7 @@
-use eframe::egui::{self, Color32, FontId, Frame, RichText, ScrollArea, text::{self, LayoutJob}};
+use eframe::egui::{
+    self, Color32, FontId, Frame, RichText, ScrollArea,
+    text::{self, LayoutJob},
+};
 #[derive(Default)]
 
 pub struct CompareResults {
