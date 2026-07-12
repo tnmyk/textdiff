@@ -1,12 +1,12 @@
 use eframe::egui::{self};
 
-use crate::ui::input::Input;
+use crate::ui::{compare_results::CompareResults, input::Input};
 
 #[derive(Default)]
 pub struct TextDiffApp {
-    input1: Input,
-    input2: Input,
-    result: Option<Vec<(similar::ChangeTag, String)>>,
+    pub input1: Input,
+    pub input2: Input,
+    pub result: CompareResults,
 }
 
 impl TextDiffApp {
@@ -14,7 +14,7 @@ impl TextDiffApp {
         Self {
             input1: Input::new(),
             input2: Input::new(),
-            result: None,
+            result: CompareResults::new(eframe::egui::text::LayoutJob::default()),
         }
     }
 }
@@ -38,52 +38,10 @@ impl eframe::App for TextDiffApp {
                 );
                 
                 if compare_btn.clicked() {
-                    let text1 = &self.input1.text;
-                    let text2 = &self.input2.text;
-                    
-                    let mut changes = Vec::new();
-                    similar::TextDiff::from_lines(text1, text2)
-                        .iter_all_changes()
-                        .for_each(|change| {
-                            changes.push((change.tag(), change.to_string()));
-                        });
-                    self.result = Some(changes);
-                }
+                    self.result.compare(&self.input1.text, &self.input2.text, ui);
+               }
 
-                if let Some(ref changes) = self.result {
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Differences:").heading());
-                    ui.add_space(5.0);
-                    
-                    egui::Frame::new()
-                        .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(8.0)
-                        .inner_margin(12.0)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(400.0)
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                                        for (tag, text) in changes {
-                                            let (color, bg_color) = match tag {
-                                                similar::ChangeTag::Delete => (egui::Color32::WHITE, egui::Color32::from_rgb(130, 0, 0)),
-                                                similar::ChangeTag::Insert => (egui::Color32::BLACK, egui::Color32::from_rgb(0, 150, 0)),
-                                                similar::ChangeTag::Equal => (ui.visuals().text_color(), egui::Color32::TRANSPARENT),
-                                            };
-                                            
-                                            ui.label(egui::RichText::new(text)
-                                                .color(color)
-                                                .background_color(bg_color)
-                                                .family(egui::FontFamily::Monospace)
-                                                .size(14.0)
-                                            );
-                                        }
-                                    });
-                                });
-                        });
-                }
+                self.result.render(ui);
             });
         });
     }
