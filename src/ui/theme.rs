@@ -103,5 +103,5 @@ pub fn apply_theme(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(14.0, 6.0);
     });
 
-    ctx.set_zoom_factor(1.375);
+    ctx.set_zoom_factor(1.25);
 }

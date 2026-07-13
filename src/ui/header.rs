@@ -11,7 +11,7 @@ pub fn render(ui: &mut egui::Ui) {
             ui.label(
                 RichText::new("Diff")
                     .heading()
-                    .size(12.0)
+                    .size(14.0)
                     .strong()
                     .color(egui::Color32::WHITE),
             );
