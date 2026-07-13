@@ -3,7 +3,7 @@
 
 mod app;
 mod ui;
-use app::TextDiffApp;
+use app::DiffApp;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
@@ -18,9 +18,9 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "TextDiff App",
+        "diff",
         native_options,
-        Box::new(|cc| Ok(Box::new(TextDiffApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(DiffApp::new(cc)))),
     )
 }
 
@@ -49,7 +49,7 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(TextDiffApp::new(cc)))),
+                Box::new(|cc| Ok(Box::new(DiffApp::new(cc)))),
             )
             .await;
 

@@ -14,14 +14,14 @@ pub enum AppMode {
     Diff,
 }
 
-pub struct TextDiffApp {
+pub struct DiffApp {
     mode: AppMode,
     input1: Input,
     input2: Input,
     result: CompareResults,
 }
 
-impl TextDiffApp {
+impl DiffApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply_theme(&cc.egui_ctx);
         Self {
@@ -33,7 +33,7 @@ impl TextDiffApp {
     }
 }
 
-impl eframe::App for TextDiffApp {
+impl eframe::App for DiffApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::bottom("footer").show(ui, |ui| {
             ui.add_space(8.0);
