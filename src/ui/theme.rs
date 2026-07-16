@@ -11,10 +11,6 @@ pub fn apply_theme(ctx: &egui::Context) {
         FontData::from_static(include_bytes!("../../assets/Inter-Regular.ttf")).into(),
     );
     fonts.font_data.insert(
-        "Inter-Bold".into(),
-        FontData::from_static(include_bytes!("../../assets/Inter-Bold.ttf")).into(),
-    );
-    fonts.font_data.insert(
         "JetBrainsMono".into(),
         FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf")).into(),
     );
