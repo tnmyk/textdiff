@@ -24,6 +24,14 @@ All processing happens locally. Nothing is sent to a server.
 cargo run
 ```
 
+## Develop web version
+
+```sh
+trunk serve
+```
+
+Then open <http://127.0.0.1:8080>. Auto-reloads on change.
+
 ## Build for web
 
 ```sh
