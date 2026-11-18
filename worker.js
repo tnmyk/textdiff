@@ -28,7 +28,9 @@ function brotliHeaders(etag) {
 }
 
 async function serveBrotliWasm(request, env, url) {
-  const headers = new Headers();
+  // Ask the asset layer for the stored bytes. Without this, an intermediary can
+  // transparently re-compress the `.br` file, which would double-encode it.
+  const headers = new Headers({ "Accept-Encoding": "identity" });
   const ifNoneMatch = request.headers.get("If-None-Match");
   if (ifNoneMatch) headers.set("If-None-Match", ifNoneMatch);
 
@@ -43,6 +45,9 @@ async function serveBrotliWasm(request, env, url) {
     });
   }
   if (!asset.ok) return null;
+
+  const encoding = asset.headers.get("Content-Encoding");
+  if (encoding && encoding.toLowerCase() !== "identity") return null;
 
   return new Response(asset.body, {
     headers: brotliHeaders(asset.headers.get("ETag")),

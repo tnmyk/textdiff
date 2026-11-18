@@ -12,8 +12,21 @@ wasm-opt -Oz --all-features --disable-compact-imports \
 # that accept brotli, which is smaller than Cloudflare's on-the-fly compression.
 # Quality 11 is the smallest output; the extra build time is paid once in CI.
 if command -v brotli >/dev/null 2>&1; then
-  brotli -q 11 --force -o dist/diff_bg.wasm.br dist/diff_bg.wasm
-  echo "brotli: dist/diff_bg.wasm.br ($(wc -c < dist/diff_bg.wasm.br | tr -d ' ') bytes)"
+  br_tmp="dist/diff_bg.wasm.br.tmp"
+  br_out="dist/diff_bg.wasm.br"
+  rm -f "$br_tmp"
+  brotli -q 11 -o "$br_tmp" dist/diff_bg.wasm
+
+  # Never publish an empty precompressed asset: the Worker would serve it as a
+  # valid brotli response and the app would fail to load.
+  if [ ! -s "$br_tmp" ]; then
+    rm -f "$br_tmp"
+    echo "error: brotli produced an empty $br_out" >&2
+    exit 1
+  fi
+
+  mv -f "$br_tmp" "$br_out"
+  echo "brotli: $br_out ($(wc -c < "$br_out" | tr -d ' ') bytes)"
 else
   echo "warning: brotli CLI not found; skipping dist/diff_bg.wasm.br" >&2
 fi
