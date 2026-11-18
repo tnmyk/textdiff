@@ -8,7 +8,11 @@ All processing happens locally. Nothing is sent to a server.
 
 ## Features
 
-- Line-level diff with inline word highlighting
+- Line-level diff with grapheme-safe inline highlighting
+- Ignore case, whitespace, and blank lines
+- Collapse unchanged sections and jump between changes
+- Open or drop text files into either pane
+- Keyboard shortcuts for compare, swap, and clear
 - Side-by-side rows keep both panes aligned
 - Runs natively and in the browser (WebAssembly)
 - Swap, clear, and example text actions
@@ -42,7 +46,7 @@ The dev server sets the `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-
 ## Build for web
 
 ```sh
-trunk build --release
+trunk build --release --no-sri
 ```
 
 Optionally shrink the wasm before deploying. `binaryen` provides `wasm-opt`:
