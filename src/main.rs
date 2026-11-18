@@ -24,6 +24,7 @@ fn load_fonts(cx: &mut App) {
 
 fn launch(cx: &mut App) {
     gpui_kit::init(cx);
+    app::init(cx);
     load_fonts(cx);
     theme::apply(cx);
 

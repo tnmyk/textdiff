@@ -4,12 +4,46 @@ use gpui_kit::component::link::Link;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::*;
+use gpui_kit::{EntityInputHandler as _, *};
 
 use crate::diff::{DiffResult, DiffRow, DiffSide, SideKind};
 use crate::theme;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Root key context for the application. Bindings scoped to it only fire while
+/// this window has focus (and never while an `Input` context is focused).
+const KEY_CONTEXT: &str = "TextDiff";
+/// Added to the root context while either textarea has a live IME preedit, so
+/// shortcuts stay out of the way of composition even if focus moves mid-edit.
+const KEY_CONTEXT_COMPOSING: &str = "TextDiff ImeComposing";
+/// `Input` is the context `gpui-base` installs on focused text controls
+/// (including `Textarea`).
+const KEY_BINDING_CONTEXT: &str = "TextDiff && !Input && !ImeComposing";
+
+actions!(textdiff, [Compare, Swap, ClearAll]);
+
+/// Register the app's key bindings. Call once after `gpui_kit::init`.
+pub fn init(cx: &mut App) {
+    let mut bindings = vec![
+        // text-compare parity shortcut
+        KeyBinding::new("ctrl-alt-c", Compare, Some(KEY_BINDING_CONTEXT)),
+        KeyBinding::new("ctrl-alt-s", Swap, Some(KEY_BINDING_CONTEXT)),
+        KeyBinding::new("ctrl-alt-r", ClearAll, Some(KEY_BINDING_CONTEXT)),
+        KeyBinding::new("ctrl-enter", Compare, Some(KEY_BINDING_CONTEXT)),
+    ];
+    // Keep Ctrl+Enter working everywhere, and make Cmd+Enter the mac binding
+    // advertised by tooltips (last registered wins for display).
+    #[cfg(target_os = "macos")]
+    bindings.push(KeyBinding::new(
+        "cmd-enter",
+        Compare,
+        Some(KEY_BINDING_CONTEXT),
+    ));
+    // N / P next/previous difference belongs to the diff-navigation branch;
+    // add those actions and bindings here when it lands.
+    cx.bind_keys(bindings);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Edit,
     Diff,
@@ -23,6 +57,7 @@ enum MobilePane {
 
 pub struct DiffApp {
     mode: Mode,
+    focus_handle: FocusHandle,
     original: Entity<TextareaState>,
     modified: Entity<TextareaState>,
     diff: DiffResult,
@@ -38,6 +73,8 @@ impl DiffApp {
         let modified = cx.new(|cx| {
             TextareaState::new(window, cx).placeholder("Paste the modified text here…")
         });
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
 
         let subscriptions = vec![
             cx.subscribe(&original, |_, _, event: &InputEvent, cx| {
@@ -54,6 +91,7 @@ impl DiffApp {
 
         Self {
             mode: Mode::Edit,
+            focus_handle,
             original,
             modified,
             diff: DiffResult::default(),
@@ -62,16 +100,50 @@ impl DiffApp {
         }
     }
 
-    fn compare(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn can_compare(&self, cx: &App) -> bool {
+        !self.original.read(cx).value().is_empty()
+            || !self.modified.read(cx).value().is_empty()
+    }
+
+    /// True while either textarea has an active IME preedit.
+    fn is_composing(&self, window: &mut Window, cx: &mut Context<'_, Self>) -> bool {
+        self.original
+            .update(cx, |state, cx| state.marked_text_range(window, cx).is_some())
+            || self
+                .modified
+                .update(cx, |state, cx| state.marked_text_range(window, cx).is_some())
+    }
+
+    fn compare(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let original = self.original.read(cx).value().to_string();
         let modified = self.modified.read(cx).value().to_string();
         self.diff = DiffResult::compute(&original, &modified);
         self.mode = Mode::Diff;
+        // The textareas leave the tree in diff mode; keep shortcuts working
+        // instead of leaving focus on an element that is no longer rendered.
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
-    fn back(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn on_compare(&mut self, _: &Compare, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.can_compare(cx) {
+            self.compare(window, cx);
+        }
+    }
+
+    fn on_swap(&mut self, _: &Swap, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.swap(window, cx);
+    }
+
+    fn on_clear_all(&mut self, _: &ClearAll, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.can_compare(cx) {
+            self.clear(window, cx);
+        }
+    }
+
+    fn back(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.mode = Mode::Edit;
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -117,8 +189,7 @@ impl DiffApp {
     fn edit_view(&self, _window: &mut Window, cx: &mut Context<'_, Self>, narrow: bool) -> AnyElement {
         let original_lines = self.line_count(&self.original, cx);
         let modified_lines = self.line_count(&self.modified, cx);
-        let can_compare = !self.original.read(cx).value().is_empty()
-            || !self.modified.read(cx).value().is_empty();
+        let can_compare = self.can_compare(cx);
 
         let panes = if narrow {
             let selected = match self.mobile_pane {
@@ -173,6 +244,7 @@ impl DiffApp {
             .primary()
             .label("Compare")
             .disabled(!can_compare)
+            .tooltip_with_action("Compare", &Compare, Some(KEY_CONTEXT))
             .on_click(cx.listener(|this, _, window, cx| this.compare(window, cx)));
         let example = Button::new("example")
             .ghost()
@@ -182,12 +254,14 @@ impl DiffApp {
             .ghost()
             .icon(IconName::ArrowLeftRight)
             .label("Swap")
+            .tooltip_with_action("Swap original and modified", &Swap, Some(KEY_CONTEXT))
             .on_click(cx.listener(|this, _, window, cx| this.swap(window, cx)));
         let clear = Button::new("clear")
             .danger()
             .icon(IconName::Trash)
             .label("Clear all")
             .disabled(!can_compare)
+            .tooltip_with_action("Clear both panes", &ClearAll, Some(KEY_CONTEXT))
             .on_click(cx.listener(|this, _, window, cx| this.clear(window, cx)));
 
         let actions = if narrow {
@@ -462,6 +536,11 @@ impl Render for DiffApp {
             Mode::Edit => self.edit_view(window, cx, narrow),
             Mode::Diff => self.diff_view(window, cx, narrow),
         };
+        let key_context = if self.is_composing(window, cx) {
+            KEY_CONTEXT_COMPOSING
+        } else {
+            KEY_CONTEXT
+        };
 
         div()
             .flex()
@@ -469,6 +548,11 @@ impl Render for DiffApp {
             .size_full()
             .bg(background)
             .text_color(foreground)
+            .track_focus(&self.focus_handle)
+            .key_context(key_context)
+            .on_action(cx.listener(Self::on_compare))
+            .on_action(cx.listener(Self::on_swap))
+            .on_action(cx.listener(Self::on_clear_all))
             .child(header(cx, narrow))
             .child(content)
             .child(footer(cx))
@@ -821,4 +905,167 @@ fn stat(label: &'static str, count: usize, tint: u32) -> Div {
         .text_size(px(11.))
         .child(div().text_color(color).child(count.to_string()))
         .child(div().text_color(theme::color(theme::MUTED)).child(label))
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        Entity, EntityInputHandler as _, Focusable as _, KeyBindingContextPredicate, KeyContext,
+        TestAppContext, VisualTestContext,
+    };
+
+    use super::{DiffApp, Mode, KEY_BINDING_CONTEXT, KEY_CONTEXT, KEY_CONTEXT_COMPOSING, init};
+
+    #[cfg(target_os = "macos")]
+    const COMPARE_KEY: &str = "cmd-enter";
+    #[cfg(not(target_os = "macos"))]
+    const COMPARE_KEY: &str = "ctrl-enter";
+
+    fn setup(cx: &mut TestAppContext) -> (Entity<DiffApp>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+        });
+        cx.add_window_view(|window, cx| DiffApp::new(window, cx))
+    }
+
+    fn render(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    fn mode(view: &Entity<DiffApp>, cx: &VisualTestContext) -> Mode {
+        cx.read(|cx| view.read(cx).mode)
+    }
+
+    fn original_value(view: &Entity<DiffApp>, cx: &VisualTestContext) -> String {
+        cx.read(|cx| view.read(cx).original.read(cx).value().to_string())
+    }
+
+    fn modified_value(view: &Entity<DiffApp>, cx: &VisualTestContext) -> String {
+        cx.read(|cx| view.read(cx).modified.read(cx).value().to_string())
+    }
+
+    fn set_values(
+        view: &Entity<DiffApp>,
+        cx: &mut VisualTestContext,
+        original: &str,
+        modified: &str,
+    ) {
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.original
+                    .update(cx, |state, cx| state.set_value(original, window, cx));
+                app.modified
+                    .update(cx, |state, cx| state.set_value(modified, window, cx));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn shortcuts_compare_swap_and_clear(cx: &mut TestAppContext) {
+        let (view, cx) = setup(cx);
+        render(cx);
+        set_values(&view, cx, "one\ntwo", "one\nthree");
+
+        cx.simulate_keystrokes(COMPARE_KEY);
+        assert_eq!(mode(&view, cx), Mode::Diff);
+
+        cx.simulate_keystrokes("ctrl-alt-s");
+        assert_eq!(mode(&view, cx), Mode::Edit);
+        assert_eq!(original_value(&view, cx), "one\nthree");
+        assert_eq!(modified_value(&view, cx), "one\ntwo");
+
+        cx.simulate_keystrokes("ctrl-alt-r");
+        assert!(original_value(&view, cx).is_empty());
+        assert!(modified_value(&view, cx).is_empty());
+
+        set_values(&view, cx, "a", "b");
+        cx.simulate_keystrokes("ctrl-alt-c");
+        assert_eq!(mode(&view, cx), Mode::Diff);
+    }
+
+    #[gpui::test]
+    fn compare_from_textarea_restores_root_shortcuts(cx: &mut TestAppContext) {
+        let (view, cx) = setup(cx);
+        render(cx);
+        set_values(&view, cx, "one\ntwo", "one\nthree");
+
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.original.read(cx).focus_handle(cx).focus(window, cx);
+                app.compare(window, cx);
+            });
+        });
+        assert_eq!(mode(&view, cx), Mode::Diff);
+
+        cx.simulate_keystrokes("ctrl-alt-s");
+        assert_eq!(mode(&view, cx), Mode::Edit);
+        assert_eq!(original_value(&view, cx), "one\nthree");
+    }
+
+    #[gpui::test]
+    fn shortcuts_stay_off_focused_textarea_and_ime_preedit(cx: &mut TestAppContext) {
+        let (view, cx) = setup(cx);
+        render(cx);
+        set_values(&view, cx, "one\ntwo", "one\nthree");
+
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.original.read(cx).focus_handle(cx).focus(window, cx);
+            });
+        });
+        cx.simulate_keystrokes(COMPARE_KEY);
+        cx.simulate_keystrokes("ctrl-alt-c");
+        cx.simulate_keystrokes("ctrl-alt-s");
+        cx.simulate_keystrokes("ctrl-alt-r");
+        assert_eq!(mode(&view, cx), Mode::Edit);
+        assert_eq!(original_value(&view, cx), "one\ntwo");
+        assert_eq!(modified_value(&view, cx), "one\nthree");
+
+        // An active IME preedit keeps shortcuts off even after focus leaves the
+        // field mid-composition.
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.original.update(cx, |state, cx| {
+                    state.replace_and_mark_text_in_range(None, "に", None, window, cx);
+                });
+            });
+        });
+        cx.update(|window, cx| window.blur(cx));
+        cx.simulate_keystrokes(COMPARE_KEY);
+        assert_eq!(mode(&view, cx), Mode::Edit);
+        assert_eq!(modified_value(&view, cx), "one\nthree");
+
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.original
+                    .update(cx, |state, cx| state.unmark_text(window, cx));
+                app.focus_handle.focus(window, cx);
+            });
+        });
+        cx.simulate_keystrokes(COMPARE_KEY);
+        assert_eq!(mode(&view, cx), Mode::Diff);
+    }
+
+    #[test]
+    fn binding_predicate_excludes_text_input_and_ime_contexts() {
+        let predicate = KeyBindingContextPredicate::parse(KEY_BINDING_CONTEXT).unwrap();
+        let root = KeyContext::parse(KEY_CONTEXT).unwrap();
+
+        assert_eq!(predicate.depth_of(&[root.clone()]), Some(1));
+        assert_eq!(
+            predicate.depth_of(&[root.clone(), KeyContext::parse("Input").unwrap()]),
+            None
+        );
+        assert_eq!(
+            predicate.depth_of(&[
+                root,
+                KeyContext::parse(KEY_CONTEXT_COMPOSING).unwrap(),
+            ]),
+            None
+        );
+    }
 }
