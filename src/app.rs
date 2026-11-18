@@ -143,12 +143,10 @@ pub struct DiffApp {
 
 impl DiffApp {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let original = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Paste the original text here…")
-        });
-        let modified = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Paste the modified text here…")
-        });
+        let original = cx
+            .new(|cx| TextareaState::new(window, cx).placeholder("Paste the original text here…"));
+        let modified = cx
+            .new(|cx| TextareaState::new(window, cx).placeholder("Paste the modified text here…"));
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
@@ -189,17 +187,16 @@ impl DiffApp {
     }
 
     fn can_compare(&self, cx: &App) -> bool {
-        !self.original.read(cx).value().is_empty()
-            || !self.modified.read(cx).value().is_empty()
+        !self.original.read(cx).value().is_empty() || !self.modified.read(cx).value().is_empty()
     }
 
     /// True while either textarea has an active IME preedit.
     fn is_composing(&self, window: &mut Window, cx: &mut Context<'_, Self>) -> bool {
-        self.original
-            .update(cx, |state, cx| state.marked_text_range(window, cx).is_some())
-            || self
-                .modified
-                .update(cx, |state, cx| state.marked_text_range(window, cx).is_some())
+        self.original.update(cx, |state, cx| {
+            state.marked_text_range(window, cx).is_some()
+        }) || self.modified.update(cx, |state, cx| {
+            state.marked_text_range(window, cx).is_some()
+        })
     }
 
     fn compare(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -372,6 +369,7 @@ impl DiffApp {
             FileTarget::Modified => self.modified.clone(),
         };
         state.update(cx, |state, cx| state.set_value(text, window, cx));
+        state.read(cx).focus_handle(cx).focus(window, cx);
 
         let info = FileInfo { name, bytes };
         match target {
@@ -623,12 +621,7 @@ impl DiffApp {
             .items_center()
             .flex_wrap()
             .gap_2()
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(muted)
-                    .child("Ignore"),
-            )
+            .child(div().text_size(px(11.)).text_color(muted).child("Ignore"))
             .child(self.option_toggle("opt-case", "Case", self.options.ignore_case, cx))
             .child(self.option_toggle(
                 "opt-whitespace",
@@ -752,6 +745,14 @@ impl DiffApp {
             ))
     }
 
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    pub(crate) fn mobile_pane_id(&self) -> &'static str {
+        match self.mobile_pane {
+            MobilePane::Original => "original",
+            MobilePane::Modified => "modified",
+        }
+    }
+
     fn diff_view(
         &self,
         _window: &mut Window,
@@ -761,6 +762,7 @@ impl DiffApp {
         let border = cx.theme().border;
         let group_box = cx.theme().group_box;
         let muted_foreground = cx.theme().muted_foreground;
+        let file_error = self.file_error.clone();
         let stats = self.diff.stats;
         let rows = &self.diff.rows;
         let filters = self.options.active_labels();
@@ -772,9 +774,14 @@ impl DiffApp {
         let hunks = self.diff.change_hunks();
         let items = diff_display_items(&self.diff, self.only_changes, &self.expanded_gaps);
         let show_empty_state = rows.is_empty() || (self.only_changes && hunks.is_empty());
+        let empty_message = if self.options != CompareOptions::default() {
+            "No differences with the current ignore options."
+        } else {
+            "The two texts are identical."
+        };
 
         let body: Vec<AnyElement> = if show_empty_state {
-            vec![empty_state(cx).into_any_element()]
+            vec![empty_state(cx, empty_message).into_any_element()]
         } else if narrow {
             let mut elements = Vec::new();
             for item in &items {
@@ -846,11 +853,17 @@ impl DiffApp {
         let previous = Button::new("previous-change")
             .ghost()
             .label("← Previous")
+            .tooltip_with_action(
+                "Previous change",
+                &actions::PreviousChange,
+                Some(DIFF_KEY_CONTEXT),
+            )
             .disabled(!can_navigate)
             .on_click(cx.listener(|this, _, window, cx| this.previous_change(window, cx)));
         let next = Button::new("next-change")
             .ghost()
             .label("Next →")
+            .tooltip_with_action("Next change", &actions::NextChange, Some(DIFF_KEY_CONTEXT))
             .disabled(!can_navigate)
             .on_click(cx.listener(|this, _, window, cx| this.next_change(window, cx)));
 
@@ -905,11 +918,7 @@ impl DiffApp {
                                         div()
                                             .text_xs()
                                             .text_color(muted_foreground)
-                                            .child(format!(
-                                                "{} rows{}",
-                                                rows.len(),
-                                                filter_label
-                                            )),
+                                            .child(format!("{} rows{}", rows.len(), filter_label)),
                                     ),
                             ),
                     )
@@ -959,6 +968,9 @@ impl DiffApp {
                             .child(next),
                     ),
             )
+            .when_some(file_error, |this, message| {
+                this.child(file_error_banner(&message))
+            })
             .child(
                 div()
                     .flex()
@@ -1138,18 +1150,14 @@ fn editor_card(
                 ),
         )
         .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .p(px(12.))
-                .child(
-                    Textarea::new(&state)
-                        .w_full()
-                        .h(relative(1.))
-                        .appearance(false)
-                        .bordered(false)
-                        .aria_label(target.label()),
-                ),
+            div().flex_1().min_h_0().p(px(12.)).child(
+                Textarea::new(&state)
+                    .w_full()
+                    .h(relative(1.))
+                    .appearance(false)
+                    .bordered(false)
+                    .aria_label(target.label()),
+            ),
         );
 
     #[cfg(not(target_family = "wasm"))]
@@ -1190,7 +1198,7 @@ fn file_error_banner(message: &str) -> Div {
         .child(message.to_string())
 }
 
-fn empty_state(cx: &App) -> Div {
+fn empty_state(cx: &App, message: &str) -> Div {
     let muted = cx.theme().muted_foreground;
     div()
         .flex()
@@ -1201,7 +1209,7 @@ fn empty_state(cx: &App) -> Div {
         .h(px(120.))
         .text_sm()
         .text_color(muted)
-        .child("The two texts are identical.")
+        .child(message.to_string())
 }
 
 /// Build the rows shown by the diff body.
@@ -1301,11 +1309,15 @@ fn unified_line_count(row: &DiffRow) -> usize {
     usize::from(show_left) + usize::from(show_right)
 }
 
-/// Equal rows render once. Change rows render each populated side, removed
-/// before added.
+/// Equal rows render once unless the original texts differ under the active
+/// ignore options; then both sides are shown. Change rows render each populated
+/// side, removed before added.
 fn unified_line_sides(row: &DiffRow) -> (bool, bool) {
     let show_left = row.left.kind != SideKind::Empty;
-    let show_right = row.right.kind != SideKind::Empty && row.left.kind != SideKind::Equal;
+    let same_equal_text = row.left.kind == SideKind::Equal
+        && row.right.kind == SideKind::Equal
+        && row.left.text == row.right.text;
+    let show_right = row.right.kind != SideKind::Empty && !same_equal_text;
     (show_left, show_right)
 }
 
@@ -1536,7 +1548,10 @@ fn stat(label: &'static str, count: usize, tint: u32) -> Div {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{DiffItem, diff_display_items, display_index_for_row, unified_line_sides};
+    use super::{
+        DiffItem, diff_display_items, display_index_for_row, unified_line_count, unified_line_sides,
+    };
+    use crate::diff::CompareOptions;
     use crate::diff::DiffResult;
 
     fn ten_line_diff() -> DiffResult {
@@ -1609,6 +1624,19 @@ mod tests {
     }
 
     #[test]
+    fn ignored_equal_rows_show_both_sides_in_unified_mode() {
+        let options = CompareOptions {
+            ignore_case: true,
+            ..Default::default()
+        };
+        let diff = DiffResult::compute_with_options("Hello\n", "hello\n", options);
+        let (show_left, show_right) = unified_line_sides(&diff.rows[0]);
+        assert!(show_left);
+        assert!(show_right);
+        assert_eq!(unified_line_count(&diff.rows[0]), 2);
+    }
+
+    #[test]
     fn equal_rows_render_once_in_unified_mode() {
         let diff = ten_line_diff();
         let (show_left, show_right) = unified_line_sides(&diff.rows[0]);
@@ -1628,7 +1656,7 @@ mod shortcut_tests {
         TestAppContext, VisualTestContext,
     };
 
-    use super::{DiffApp, Mode, KEY_BINDING_CONTEXT, KEY_CONTEXT, KEY_CONTEXT_COMPOSING, init};
+    use super::{DiffApp, KEY_BINDING_CONTEXT, KEY_CONTEXT, KEY_CONTEXT_COMPOSING, Mode, init};
 
     #[cfg(target_os = "macos")]
     const COMPARE_KEY: &str = "cmd-enter";
@@ -1764,6 +1792,31 @@ mod shortcut_tests {
         assert_eq!(mode(&view, cx), Mode::Diff);
     }
 
+    #[gpui::test]
+    fn n_p_walk_change_hunks_and_wrap(cx: &mut TestAppContext) {
+        let (view, cx) = setup(cx);
+        render(cx);
+        set_values(
+            &view,
+            cx,
+            "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n",
+            "alpha\nBRAVO\ncharlie\ndelta\nECHO\nfoxtrot\n",
+        );
+        cx.simulate_keystrokes(COMPARE_KEY);
+        assert_eq!(mode(&view, cx), Mode::Diff);
+
+        let hunk = |cx: &VisualTestContext| cx.read(|cx| view.read(cx).active_hunk);
+        assert_eq!(hunk(cx), None);
+        cx.simulate_keystrokes("n");
+        assert_eq!(hunk(cx), Some(0));
+        cx.simulate_keystrokes("n");
+        assert_eq!(hunk(cx), Some(1));
+        cx.simulate_keystrokes("n");
+        assert_eq!(hunk(cx), Some(0));
+        cx.simulate_keystrokes("p");
+        assert_eq!(hunk(cx), Some(1));
+    }
+
     #[test]
     fn binding_predicate_excludes_text_input_and_ime_contexts() {
         let predicate = KeyBindingContextPredicate::parse(KEY_BINDING_CONTEXT).unwrap();
@@ -1775,10 +1828,7 @@ mod shortcut_tests {
             None
         );
         assert_eq!(
-            predicate.depth_of(&[
-                root,
-                KeyContext::parse(KEY_CONTEXT_COMPOSING).unwrap(),
-            ]),
+            predicate.depth_of(&[root, KeyContext::parse(KEY_CONTEXT_COMPOSING).unwrap(),]),
             None
         );
     }
