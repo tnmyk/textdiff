@@ -201,7 +201,8 @@ impl DiffResult {
                     for index in 0..paired {
                         let old = &old_meta[deleted[index]];
                         let new = &new_meta[inserted[index]];
-                        let char_diff = TextDiff::from_chars(&old.display, &new.display);
+                        let char_diff =
+                            TextDiff::configure().diff_graphemes(&old.display, &new.display);
 
                         specs.push(RowSpec {
                             old: Some(deleted[index]),
@@ -571,6 +572,23 @@ mod tests {
         assert_eq!(emphasized(&diff.rows[0].right), "è😃");
         assert_eq!(joined(&diff.rows[0].left), diff.rows[0].left.text);
         assert_eq!(joined(&diff.rows[0].right), diff.rows[0].right.text);
+    }
+
+    #[test]
+    fn grapheme_clusters_are_not_split() {
+        let diff = DiffResult::compute("a👍🏽b\n", "a👍🏻b\n");
+        assert_eq!(emphasized(&diff.rows[0].left), "👍🏽");
+        assert_eq!(emphasized(&diff.rows[0].right), "👍🏻");
+        assert_eq!(joined(&diff.rows[0].left), "a👍🏽b");
+
+        let diff = DiffResult::compute("👨‍👩‍👧‍👦\n", "👨‍👩‍👧\n");
+        assert_eq!(emphasized(&diff.rows[0].left), "👨‍👩‍👧‍👦");
+        assert_eq!(emphasized(&diff.rows[0].right), "👨‍👩‍👧");
+
+        let diff = DiffResult::compute("e\u{301}\n", "é\n");
+        assert_eq!(joined(&diff.rows[0].left), "e\u{301}");
+        assert_eq!(emphasized(&diff.rows[0].left), "e\u{301}");
+        assert_eq!(emphasized(&diff.rows[0].right), "é");
     }
 
     #[test]

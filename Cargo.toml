@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 gpui-kit = { version = "0.10.0", default-features = false, features = ["component", "assets"] }
-similar = "3.1.1"
+similar = { version = "3.1.1", features = ["unicode"] }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
