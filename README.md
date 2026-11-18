@@ -9,16 +9,21 @@ All processing happens locally. Nothing is sent to a server.
 ## Features
 
 - Line-level diff with inline word highlighting
-- Synchronized scrolling across both panes
+- Side-by-side rows keep both panes aligned
 - Runs natively and in the browser (WebAssembly)
+- Swap, clear, and example text actions
+- Responsive mobile layout with a tabbed editor and unified diff
 
 ## Stack
 
-- **Rust** + **egui / eframe** — UI
+- **Rust** + **GPUI / gpui-kit** — UI
 - **similar** — diffing engine
+- **Trunk** — web build
 - **Cloudflare Workers** — hosting
 
 ## Run locally
+
+The project pins a nightly Rust toolchain because GPUI currently uses unstable features.
 
 ```sh
 cargo run
@@ -32,14 +37,26 @@ trunk serve
 
 Then open <http://127.0.0.1:8080>. Auto-reloads on change.
 
+The dev server sets the `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers GPUI's web runtime needs.
+
 ## Build for web
 
 ```sh
 trunk build --release
 ```
 
+Optionally shrink the wasm before deploying. `binaryen` provides `wasm-opt`:
+
+```sh
+./scripts/optimize-wasm.sh
+```
+
+The deploy workflow runs this pass.
+
 ## Deploy
 
 ```sh
 wrangler deploy
 ```
+
+`_headers` is copied into `dist/` during the Trunk build, so Cloudflare serves the wasm with the required cross-origin isolation headers.

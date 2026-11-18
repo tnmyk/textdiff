@@ -4,23 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-log = "0.4.33"
+gpui-kit = { version = "0.10.0", default-features = false, features = ["component"] }
 similar = "3.1.1"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe = "0.35.0"
-env_logger = "0.11.11"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-eframe = { version = "0.35.0", default-features = false, features = ["glow", "web_screen_reader"] }
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
-
-[dev-dependencies]
+[profile.dev.package]
+gpui-pre = { opt-level = 1 }
+gpui-component = { opt-level = 1 }
+gpui-kit = { opt-level = 1 }
+gpui-kit-assets = { opt-level = 1 }
+gpui-pre-platform = { opt-level = 1 }
 
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = true
-strip = true
 panic = "abort"
 codegen-units = 1

@@ -1,89 +1,164 @@
 <!DOCTYPE html>
-<html>
+<html lang="en" class="dark">
 <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <!-- Disable zooming: -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>diff</title>
-    <link data-trunk rel="rust" data-bin="diff" data-wasm-opt="0" />
-    <style>
-        html {
-            /* Remove touch delay: */
-            touch-action: manipulation;
-        }
-        body {
-            /* Light mode background color for what is not covered by the egui canvas,
-            or where the egui canvas is translucent. */
-            background: #909090;
-        }
-        @media (prefers-color-scheme: dark) {
-            body {
-                /* Dark mode background color */
-                background: #404040;
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>diff — compare text, locally</title>
+    <script>
+        // gpui-pre-web 0.3.12 sizes the canvas backing store in CSS pixels,
+        // then divides devicePixelContentBoxSize by the DPR. On Retina/high-DPI
+        // displays that halves the logical viewport, so force its CSS-pixel
+        // fallback path instead.
+        if (window.devicePixelRatio !== 1) {
+            try {
+                delete ResizeObserverEntry.prototype.devicePixelContentBoxSize;
+            } catch (_) {
+                // Prototype is not configurable in this browser; use the default path.
             }
         }
-        /* Allow canvas to fill entire web page: */
+    </script>
+    <link data-trunk rel="rust" data-bin="diff" data-bindgen-target="web" data-wasm-opt="0" />
+    <link data-trunk rel="copy-file" href="_headers" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         html, body {
+            width: 100%;
+            height: 100%;
             overflow: hidden;
-            margin: 0 !important;
-            padding: 0 !important;
-            height: 100%;
-            width: 100%;
+            background: #0A0E13;
+            color: #E6EDF6;
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
-        /* Make canvas fill entire document: */
-        canvas {
-            margin-right: auto;
-            margin-left: auto;
+
+        body > canvas {
+            position: fixed;
+            inset: 0;
             display: block;
-            position: absolute;
-            top: 0;
-            left: 0;
             width: 100%;
             height: 100%;
+            touch-action: none;
+            outline: none;
+            user-select: none;
         }
-        
-        .centered {
-            margin-right: auto;
-            margin-left: auto;
-            display: block;
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #f0f0f0;
-            font-size: 24px;
-            font-family: Ubuntu-Light, Helvetica, sans-serif;
-            text-align: center;
+
+        #loading {
+            position: fixed;
+            z-index: 1;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            background: #0A0E13;
+            transition: opacity 180ms ease;
         }
-        
-        .lds-dual-ring {
-            display: inline-block;
-            width: 24px;
-            height: 24px;
+
+        #loading.hidden {
+            opacity: 0;
+            pointer-events: none;
         }
-        .lds-dual-ring:after {
-            content: " ";
-            display: block;
-            width: 24px;
-            height: 24px;
-            margin: 0px;
+
+        .mark {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: #F5B761;
+            color: #1A1206;
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .spinner {
+            width: 22px;
+            height: 22px;
+            border: 2px solid #1E2936;
+            border-top-color: #F5B761;
             border-radius: 50%;
-            border: 3px solid #fff;
-            border-color: #fff transparent #fff transparent;
-            animation: lds-dual-ring 1.2s linear infinite;
+            animation: spin 900ms linear infinite;
         }
-        @keyframes lds-dual-ring {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+
+        #loading p {
+            font-size: 13px;
+            color: #7D8CA1;
+        }
+
+        #loading .error {
+            max-width: 34rem;
+            padding: 0 24px;
+            color: #F87171;
+            font-size: 14px;
+            line-height: 1.5;
+            text-align: center;
+            white-space: pre-wrap;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .spinner {
+                animation: none;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="centered" id="loading_text">
-        <p style="font-size:16px">Loading…</p>
-        <div class="lds-dual-ring"></div>
+    <div id="loading">
+        <div class="mark">d</div>
+        <div class="spinner"></div>
+        <p>Loading diff…</p>
     </div>
-    <!-- The WASM code will resize the canvas dynamically -->
-    <canvas id="the_canvas_id"></canvas>
+    <script>
+        (() => {
+            const loading = document.getElementById("loading");
+            const started = Date.now();
+
+            const fail = (message) => {
+                loading.innerHTML = `<p class="error">${message}</p>`;
+            };
+
+            const reveal = () => {
+                const canvas = document.querySelector("body > canvas");
+                if (!canvas) return false;
+                loading.classList.add("hidden");
+                setTimeout(() => loading.remove(), 220);
+                return true;
+            };
+
+            const observer = new MutationObserver(() => {
+                if (reveal()) observer.disconnect();
+            });
+            observer.observe(document.body, { childList: true });
+
+            window.addEventListener("error", (event) => {
+                if (!document.querySelector("body > canvas")) {
+                    fail(event.message || "The application failed to start.");
+                }
+            });
+
+            setTimeout(() => {
+                if (!document.querySelector("body > canvas")) {
+                    fail(
+                        "The application did not start. Open the browser console for details.\n\n" +
+                        "This build needs WebGPU or WebGL2 and cross-origin isolation.",
+                    );
+                    console.error("diff failed to start after", Date.now() - started, "ms");
+                }
+            }, 30000);
+        })();
+    </script>
 </body>
 </html>

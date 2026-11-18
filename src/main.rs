@@ -1,73 +1,79 @@
 #![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod ui;
+mod diff;
+mod theme;
+
+use std::borrow::Cow;
+
 use app::DiffApp;
+use gpui_kit::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result {
-    use eframe::egui::ViewportBuilder;
-
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-
-    let native_options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "diff",
-        native_options,
-        Box::new(|cc| Ok(Box::new(DiffApp::new(cc)))),
-    )
+fn load_fonts(cx: &mut App) {
+    cx.text_system()
+        .add_fonts(vec![
+            Cow::Borrowed(include_bytes!("../assets/Inter-Regular.ttf").as_slice()),
+            Cow::Borrowed(include_bytes!("../assets/JetBrainsMono-Regular.ttf").as_slice()),
+            Cow::Borrowed(include_bytes!("../assets/IBMPlexSans-Regular.ttf").as_slice()),
+        ])
+        .expect("failed to load application fonts");
 }
 
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    use eframe::wasm_bindgen::JsCast as _;
+fn launch(cx: &mut App) {
+    gpui_kit::init(cx);
+    load_fonts(cx);
+    theme::apply(cx);
 
-    // Redirect `log` message to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
-
-    let web_options = eframe::WebOptions {
-        renderer: eframe::Renderer::Glow,
+    #[cfg(not(target_family = "wasm"))]
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(1180.), px(820.)),
+            cx,
+        ))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("diff".into()),
+            ..Default::default()
+        }),
         ..Default::default()
     };
+    #[cfg(target_family = "wasm")]
+    let options = WindowOptions::default();
 
-    wasm_bindgen_futures::spawn_local(async {
-        let document = web_sys::window()
-            .expect("No window")
-            .document()
-            .expect("No document");
+    gpui_kit::open_window(options, cx, |window, cx| {
+        cx.new(|cx| DiffApp::new(window, cx))
+    })
+    .expect("failed to open window");
 
-        let canvas = document
-            .get_element_by_id("the_canvas_id")
-            .expect("Failed to find the_canvas_id")
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("the_canvas_id was not a HtmlCanvasElement");
+    cx.activate(true);
+}
 
-        let start_result = eframe::WebRunner::new()
-            .start(
-                canvas,
-                web_options,
-                Box::new(|cc| Ok(Box::new(DiffApp::new(cc)))),
-            )
-            .await;
+#[cfg(not(target_family = "wasm"))]
+fn main() {
+    gpui_kit::application().run(launch);
+}
 
-        if let Some(loading_text) = document.get_element_by_id("loading_text") {
-            match start_result {
-                Ok(_) => {
-                    loading_text.remove();
-                }
-                Err(e) => {
-                    loading_text.set_inner_html(
-                        "<p> The app has crashed. See the developer console for details. </p>",
-                    );
-                    panic!("Failed to start eframe: {e:?}");
-                }
-            }
-        }
+#[cfg(target_family = "wasm")]
+fn main() {
+    use std::cell::RefCell;
+
+    use gpui_kit::web::{WebBackendPreference, WebPlatform};
+
+    thread_local! {
+        static APPLICATION: RefCell<Option<ApplicationHandle>> = const { RefCell::new(None) };
+    }
+
+    gpui_kit::platform::web_init();
+
+    let platform = std::rc::Rc::new(WebPlatform::new_with_backend(
+        false,
+        WebBackendPreference::Auto,
+    ));
+    let app = Application::with_platform(platform);
+    let handle = app.run_embedded(launch);
+
+    APPLICATION.with(|application| {
+        *application.borrow_mut() = Some(handle);
     });
 }

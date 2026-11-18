@@ -3,7 +3,7 @@ name: Deploy to Cloudflare Workers
 on:
   push:
     branches:
-      - main # Or whichever branch you want to trigger the deployment
+      - main
 
 jobs:
   deploy:
@@ -13,8 +13,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-11-10
           targets: wasm32-unknown-unknown
 
       - name: Cache Rust dependencies
@@ -28,12 +29,11 @@ jobs:
       - name: Build WebAssembly
         run: trunk build --release
 
-      - name: Optimize WASM Size
+      - name: Optimize WASM
         run: |
           npm install -g wasm-opt
-          for file in dist/*.wasm; do
-            npx wasm-opt -Oz --enable-bulk-memory -o "$file" "$file"
-          done
+          wasm-opt -Oz --all-features --disable-compact-imports \
+            -o dist/diff_bg.wasm dist/diff_bg.wasm
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
