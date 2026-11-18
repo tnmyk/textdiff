@@ -1,13 +1,30 @@
+use std::collections::HashSet;
+
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::link::Link;
-use gpui_kit::assets::IconName;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::diff::{CompareOptions, DiffResult, DiffRow, DiffSide, SideKind};
 use crate::theme;
+
+mod actions {
+    gpui_kit::actions!(diff_nav, [NextChange, PreviousChange]);
+}
+
+const DIFF_CONTEXT_ROWS: usize = 2;
+const MIN_COLLAPSED_ROWS: usize = 2;
+const DIFF_KEY_CONTEXT: &str = "DiffNav";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("n", actions::NextChange, Some(DIFF_KEY_CONTEXT)),
+        KeyBinding::new("p", actions::PreviousChange, Some(DIFF_KEY_CONTEXT)),
+    ]);
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -21,6 +38,13 @@ enum MobilePane {
     Modified,
 }
 
+/// One direct child of the diff scroll container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffItem {
+    Row(usize),
+    Gap { start: usize, end: usize },
+}
+
 pub struct DiffApp {
     mode: Mode,
     original: Entity<TextareaState>,
@@ -28,17 +52,20 @@ pub struct DiffApp {
     diff: DiffResult,
     options: CompareOptions,
     mobile_pane: MobilePane,
+    only_changes: bool,
+    expanded_gaps: HashSet<usize>,
+    active_hunk: Option<usize>,
+    scroll_handle: ScrollHandle,
+    diff_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl DiffApp {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let original = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Paste the original text here…")
-        });
-        let modified = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Paste the modified text here…")
-        });
+        let original = cx
+            .new(|cx| TextareaState::new(window, cx).placeholder("Paste the original text here…"));
+        let modified = cx
+            .new(|cx| TextareaState::new(window, cx).placeholder("Paste the modified text here…"));
 
         let subscriptions = vec![
             cx.subscribe(&original, |_, _, event: &InputEvent, cx| {
@@ -52,6 +79,7 @@ impl DiffApp {
                 }
             }),
         ];
+        let diff_focus = cx.focus_handle();
 
         Self {
             mode: Mode::Edit,
@@ -60,16 +88,29 @@ impl DiffApp {
             diff: DiffResult::default(),
             options: CompareOptions::default(),
             mobile_pane: MobilePane::Original,
+            only_changes: false,
+            expanded_gaps: HashSet::new(),
+            active_hunk: None,
+            scroll_handle: ScrollHandle::new(),
+            diff_focus,
             _subscriptions: subscriptions,
         }
     }
 
-    fn compare(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn compare(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let original = self.original.read(cx).value().to_string();
         let modified = self.modified.read(cx).value().to_string();
         self.diff = DiffResult::compute_with_options(&original, &modified, self.options);
         self.mode = Mode::Diff;
+        self.reset_navigation();
+        self.diff_focus.focus(window, cx);
         cx.notify();
+    }
+
+    fn reset_navigation(&mut self) {
+        self.active_hunk = None;
+        self.expanded_gaps.clear();
+        self.scroll_handle.set_offset(point(px(0.), px(0.)));
     }
 
     fn back(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -86,6 +127,7 @@ impl DiffApp {
         original_state.update(cx, |state, cx| state.set_value(modified, window, cx));
         modified_state.update(cx, |state, cx| state.set_value(original, window, cx));
         self.diff = DiffResult::default();
+        self.reset_navigation();
         self.mode = Mode::Edit;
         cx.notify();
     }
@@ -96,6 +138,7 @@ impl DiffApp {
         original_state.update(cx, |state, cx| state.set_value("", window, cx));
         modified_state.update(cx, |state, cx| state.set_value("", window, cx));
         self.diff = DiffResult::default();
+        self.reset_navigation();
         self.mode = Mode::Edit;
         cx.notify();
     }
@@ -116,7 +159,60 @@ impl DiffApp {
         state.read(cx).value().lines().count()
     }
 
-    fn edit_view(&self, _window: &mut Window, cx: &mut Context<'_, Self>, narrow: bool) -> AnyElement {
+    fn toggle_only_changes(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.only_changes = !self.only_changes;
+        self.diff_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn next_change(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.jump_to_change(1, window, cx);
+    }
+
+    fn previous_change(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.jump_to_change(-1, window, cx);
+    }
+
+    fn jump_to_change(&mut self, step: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let hunks = self.diff.change_hunks();
+        if hunks.is_empty() {
+            self.active_hunk = None;
+            cx.notify();
+            return;
+        }
+
+        let next = match self.active_hunk.filter(|index| *index < hunks.len()) {
+            Some(current) if step >= 0 => (current + 1) % hunks.len(),
+            Some(current) => (current + hunks.len() - 1) % hunks.len(),
+            None if step >= 0 => 0,
+            None => hunks.len() - 1,
+        };
+        self.active_hunk = Some(next);
+
+        let narrow = window.viewport_size().width < px(760.);
+        let items = diff_display_items(&self.diff, self.only_changes, &self.expanded_gaps);
+        if let Some(index) =
+            display_index_for_row(&items, &self.diff.rows, hunks[next].start, narrow)
+        {
+            self.scroll_handle.scroll_to_item(index);
+        }
+
+        self.diff_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn expand_gap(&mut self, start: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.expanded_gaps.insert(start);
+        self.diff_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn edit_view(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        narrow: bool,
+    ) -> AnyElement {
         let original_lines = self.line_count(&self.original, cx);
         let modified_lines = self.line_count(&self.modified, cx);
         let can_compare = !self.original.read(cx).value().is_empty()
@@ -124,20 +220,12 @@ impl DiffApp {
 
         let panes = if narrow {
             let selected = match self.mobile_pane {
-                MobilePane::Original => editor_card(
-                    "Original",
-                    self.original.clone(),
-                    original_lines,
-                    true,
-                    cx,
-                ),
-                MobilePane::Modified => editor_card(
-                    "Modified",
-                    self.modified.clone(),
-                    modified_lines,
-                    true,
-                    cx,
-                ),
+                MobilePane::Original => {
+                    editor_card("Original", self.original.clone(), original_lines, true, cx)
+                }
+                MobilePane::Modified => {
+                    editor_card("Modified", self.modified.clone(), modified_lines, true, cx)
+                }
             };
 
             div()
@@ -227,14 +315,7 @@ impl DiffApp {
                         .child(compare)
                         .child(example),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(swap)
-                        .child(clear),
-                )
+                .child(div().flex().items_center().gap_2().child(swap).child(clear))
         };
 
         let content = div()
@@ -350,9 +431,7 @@ impl DiffApp {
                 .child(
                     div()
                         .text_sm()
-                        .when(selected, |this| {
-                            this.font_weight(FontWeight::MEDIUM)
-                        })
+                        .when(selected, |this| this.font_weight(FontWeight::MEDIUM))
                         .child(label),
                 )
                 .child(
@@ -393,8 +472,15 @@ impl DiffApp {
             ))
     }
 
-    fn diff_view(&self, _window: &mut Window, cx: &mut Context<'_, Self>, narrow: bool) -> AnyElement {
-        let theme = cx.theme();
+    fn diff_view(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        narrow: bool,
+    ) -> AnyElement {
+        let border = cx.theme().border;
+        let group_box = cx.theme().group_box;
+        let muted_foreground = cx.theme().muted_foreground;
         let stats = self.diff.stats;
         let rows = &self.diff.rows;
         let filters = self.options.active_labels();
@@ -403,11 +489,40 @@ impl DiffApp {
         } else {
             format!(" · ignoring {}", filters.join(", "))
         };
+        let hunks = self.diff.change_hunks();
+        let items = diff_display_items(&self.diff, self.only_changes, &self.expanded_gaps);
+        let show_empty_state = rows.is_empty() || (self.only_changes && hunks.is_empty());
 
-        let body = if narrow {
-            unified_rows(rows, cx)
+        let body: Vec<AnyElement> = if show_empty_state {
+            vec![empty_state(cx).into_any_element()]
+        } else if narrow {
+            let mut elements = Vec::new();
+            for item in &items {
+                match *item {
+                    DiffItem::Row(index) => {
+                        let row = &rows[index];
+                        let (show_left, show_right) = unified_line_sides(row);
+                        if show_left {
+                            elements.push(unified_row(&row.left, cx).into_any_element());
+                        }
+                        if show_right {
+                            elements.push(unified_row(&row.right, cx).into_any_element());
+                        }
+                    }
+                    DiffItem::Gap { start, end } => {
+                        elements.push(gap_row(start, end, false, cx));
+                    }
+                }
+            }
+            elements
         } else {
-            split_rows(rows, cx)
+            items
+                .iter()
+                .map(|item| match *item {
+                    DiffItem::Row(index) => diff_row(&rows[index], cx).into_any_element(),
+                    DiffItem::Gap { start, end } => gap_row(start, end, true, cx),
+                })
+                .collect()
         };
 
         let diff_header = if narrow {
@@ -417,9 +532,9 @@ impl DiffApp {
                 .h(px(36.))
                 .px(px(14.))
                 .border_b_1()
-                .border_color(theme.border)
+                .border_color(border)
                 .text_xs()
-                .text_color(theme.muted_foreground)
+                .text_color(muted_foreground)
                 .child("Unified diff")
                 .into_any_element()
         } else {
@@ -428,12 +543,36 @@ impl DiffApp {
                 .items_center()
                 .h(px(40.))
                 .border_b_1()
-                .border_color(theme.border)
+                .border_color(border)
                 .child(panel_header("Original", cx))
-                .child(div().w(px(1.)).h_full().bg(theme.border))
+                .child(div().w(px(1.)).h_full().bg(border))
                 .child(panel_header("Modified", cx))
                 .into_any_element()
         };
+
+        let can_navigate = !hunks.is_empty();
+        let position_label = match self.active_hunk.filter(|index| *index < hunks.len()) {
+            Some(index) => format!("{} of {}", index + 1, hunks.len()),
+            None if hunks.is_empty() => "No changes".to_string(),
+            None => format!("— of {}", hunks.len()),
+        };
+
+        let only_changes = Button::new("only-changes")
+            .ghost()
+            .label("Only changes")
+            .selected(self.only_changes)
+            .toggled(self.only_changes)
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_only_changes(window, cx)));
+        let previous = Button::new("previous-change")
+            .ghost()
+            .label("← Previous")
+            .disabled(!can_navigate)
+            .on_click(cx.listener(|this, _, window, cx| this.previous_change(window, cx)));
+        let next = Button::new("next-change")
+            .ghost()
+            .label("Next →")
+            .disabled(!can_navigate)
+            .on_click(cx.listener(|this, _, window, cx| this.next_change(window, cx)));
 
         div()
             .flex()
@@ -444,6 +583,18 @@ impl DiffApp {
             .pt(px(20.))
             .pb(if narrow { px(12.) } else { px(18.) })
             .gap_3()
+            .track_focus(&self.diff_focus)
+            .key_context(DIFF_KEY_CONTEXT)
+            .on_action(
+                cx.listener(|this, _: &actions::NextChange, window, cx| {
+                    this.next_change(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::PreviousChange, window, cx| {
+                    this.previous_change(window, cx)
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -456,12 +607,9 @@ impl DiffApp {
                             .items_center()
                             .gap_3()
                             .child(
-                                Button::new("back")
-                                    .ghost()
-                                    .label("← Edit")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.back(window, cx)
-                                    })),
+                                Button::new("back").ghost().label("← Edit").on_click(
+                                    cx.listener(|this, _, window, cx| this.back(window, cx)),
+                                ),
                             )
                             .child(
                                 div()
@@ -476,7 +624,7 @@ impl DiffApp {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(theme.muted_foreground)
+                                            .text_color(muted_foreground)
                                             .child(format!(
                                                 "{} rows{}",
                                                 rows.len(),
@@ -508,13 +656,39 @@ impl DiffApp {
             .child(
                 div()
                     .flex()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
+                    .gap_2()
+                    .when(narrow, |this| this.flex_col().items_start())
+                    .child(only_changes)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(previous)
+                            .child(
+                                div()
+                                    .min_w(px(64.))
+                                    .text_center()
+                                    .text_xs()
+                                    .text_color(muted_foreground)
+                                    .child(position_label),
+                            )
+                            .child(next),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
                     .rounded(px(10.))
                     .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.group_box)
+                    .border_color(border)
+                    .bg(group_box)
                     .overflow_hidden()
                     .child(diff_header)
                     .child(
@@ -525,7 +699,8 @@ impl DiffApp {
                             .flex_1()
                             .min_h_0()
                             .overflow_scroll()
-                            .child(body),
+                            .track_scroll(&self.scroll_handle)
+                            .children(body),
                     ),
             )
             .into_any_element()
@@ -565,28 +740,20 @@ fn header(cx: &App, narrow: bool) -> Div {
         .border_b_1()
         .border_color(theme.border)
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Text Diff"),
-                ),
+            div().flex().items_center().gap_3().child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Text Diff"),
+            ),
         )
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_4()
-                .child(
-                    Link::new("github")
-                        .href("https://github.com/tnmyk/textdiff")
-                        .text_sm()
-                        .child("GitHub"),
-                ),
+            div().flex().items_center().gap_4().child(
+                Link::new("github")
+                    .href("https://github.com/tnmyk/textdiff")
+                    .text_sm()
+                    .child("GitHub"),
+            ),
         )
 }
 
@@ -648,18 +815,14 @@ fn editor_card(
             )
         })
         .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .p(px(12.))
-                .child(
-                    Textarea::new(&state)
-                        .w_full()
-                        .h(relative(1.))
-                        .appearance(false)
-                        .bordered(false)
-                        .aria_label(label),
-                ),
+            div().flex_1().min_h_0().p(px(12.)).child(
+                Textarea::new(&state)
+                    .w_full()
+                    .h(relative(1.))
+                    .appearance(false)
+                    .bordered(false)
+                    .aria_label(label),
+            ),
         );
 
     card.flex_1().min_h_0()
@@ -682,40 +845,146 @@ fn empty_state(cx: &App) -> Div {
     let muted = cx.theme().muted_foreground;
     div()
         .flex()
+        .flex_none()
         .items_center()
         .justify_center()
+        .w_full()
         .h(px(120.))
         .text_sm()
         .text_color(muted)
         .child("The two texts are identical.")
 }
 
-fn split_rows(rows: &[DiffRow], cx: &App) -> AnyElement {
-    div()
-        .w_full()
-        .min_w(px(980.))
-        .when(rows.is_empty(), |this| this.child(empty_state(cx)))
-        .children(rows.iter().map(|row| diff_row(row, cx)))
-        .into_any_element()
-}
+/// Build the rows shown by the diff body.
+///
+/// In "Only changes" mode each hunk keeps [`DIFF_CONTEXT_ROWS`] unchanged rows on
+/// either side. Unchanged runs with at least [`MIN_COLLAPSED_ROWS`] hidden rows
+/// become one gap item; smaller remainders are shown inline to avoid noisy
+/// one-line "Show" buttons.
+fn diff_display_items(
+    diff: &DiffResult,
+    only_changes: bool,
+    expanded_gaps: &HashSet<usize>,
+) -> Vec<DiffItem> {
+    if !only_changes {
+        return (0..diff.rows.len()).map(DiffItem::Row).collect();
+    }
 
-fn unified_rows(rows: &[DiffRow], cx: &App) -> AnyElement {
-    let mut lines = Vec::new();
-    for row in rows {
-        if row.left.kind != SideKind::Empty {
-            lines.push(unified_row(&row.left, cx).into_any_element());
-        }
-        if row.right.kind != SideKind::Empty {
-            lines.push(unified_row(&row.right, cx).into_any_element());
+    let hunks = diff.change_hunks();
+    if hunks.is_empty() {
+        return Vec::new();
+    }
+
+    let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(hunks.len());
+    for hunk in hunks {
+        let start = hunk.start.saturating_sub(DIFF_CONTEXT_ROWS);
+        let end = (hunk.end + DIFF_CONTEXT_ROWS).min(diff.rows.len());
+        if let Some(last) = intervals.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+        } else {
+            intervals.push((start, end));
         }
     }
 
+    let mut items = Vec::new();
+    let mut cursor = 0;
+    for (start, end) in intervals {
+        if cursor < start {
+            push_unchanged_rows(&mut items, cursor, start, expanded_gaps);
+        }
+        items.extend((start..end).map(DiffItem::Row));
+        cursor = end;
+    }
+    if cursor < diff.rows.len() {
+        push_unchanged_rows(&mut items, cursor, diff.rows.len(), expanded_gaps);
+    }
+
+    items
+}
+
+fn push_unchanged_rows(
+    items: &mut Vec<DiffItem>,
+    start: usize,
+    end: usize,
+    expanded_gaps: &HashSet<usize>,
+) {
+    if start >= end {
+        return;
+    }
+    if expanded_gaps.contains(&start) || end - start < MIN_COLLAPSED_ROWS {
+        items.extend((start..end).map(DiffItem::Row));
+    } else {
+        items.push(DiffItem::Gap { start, end });
+    }
+}
+
+/// Map a diff row index to the index of its direct child in the scroll
+/// container. Unified mode can render up to two lines per diff row.
+fn display_index_for_row(
+    items: &[DiffItem],
+    rows: &[DiffRow],
+    row_index: usize,
+    unified: bool,
+) -> Option<usize> {
+    let mut index = 0;
+    for item in items {
+        match *item {
+            DiffItem::Row(row) => {
+                if row == row_index {
+                    return Some(index);
+                }
+                index += if unified {
+                    unified_line_count(&rows[row])
+                } else {
+                    1
+                };
+            }
+            DiffItem::Gap { .. } => index += 1,
+        }
+    }
+    None
+}
+
+fn unified_line_count(row: &DiffRow) -> usize {
+    let (show_left, show_right) = unified_line_sides(row);
+    usize::from(show_left) + usize::from(show_right)
+}
+
+/// Equal rows render once. Change rows render each populated side, removed
+/// before added.
+fn unified_line_sides(row: &DiffRow) -> (bool, bool) {
+    let show_left = row.left.kind != SideKind::Empty;
+    let show_right = row.right.kind != SideKind::Empty && row.left.kind != SideKind::Equal;
+    (show_left, show_right)
+}
+
+fn gap_row(start: usize, end: usize, split: bool, cx: &mut Context<'_, DiffApp>) -> AnyElement {
+    let theme = cx.theme();
+    let count = end.saturating_sub(start);
+    let label = if count == 1 {
+        "Show 1 unchanged line".to_string()
+    } else {
+        format!("Show {count} unchanged lines")
+    };
+
     div()
+        .id(("gap", start))
         .flex()
-        .flex_col()
+        .flex_none()
+        .items_center()
+        .justify_center()
         .w_full()
-        .when(rows.is_empty(), |this| this.child(empty_state(cx)))
-        .children(lines)
+        .when(split, |this| this.min_w(px(980.)))
+        .h(px(26.))
+        .bg(theme.muted)
+        .text_size(px(11.))
+        .text_color(theme.muted_foreground)
+        .cursor_pointer()
+        .hover(|this| this.bg(theme.border))
+        .child(label)
+        .on_click(cx.listener(move |this, _, window, cx| this.expand_gap(start, window, cx)))
         .into_any_element()
 }
 
@@ -740,7 +1009,7 @@ fn unified_row(side: &DiffSide, cx: &App) -> Div {
         SideKind::Empty => return div(),
     };
 
-    let mut row = div().flex().w_full().min_h(px(22.));
+    let mut row = div().flex().flex_none().w_full().min_h(px(22.));
     if let Some(bg) = bg {
         row = row.bg(bg);
     }
@@ -765,7 +1034,11 @@ fn unified_row(side: &DiffSide, cx: &App) -> Div {
             .text_right()
             .text_size(px(11.))
             .text_color(theme.muted_foreground)
-            .child(side.number.map(|number| number.to_string()).unwrap_or_default()),
+            .child(
+                side.number
+                    .map(|number| number.to_string())
+                    .unwrap_or_default(),
+            ),
     )
     .child(
         div()
@@ -787,7 +1060,9 @@ fn diff_row(row: &DiffRow, cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .flex()
+        .flex_none()
         .w_full()
+        .min_w(px(980.))
         .min_h(px(22.))
         .child(side_cell(&row.left, true, cx))
         .child(div().w(px(1.)).bg(theme.border))
@@ -808,7 +1083,11 @@ fn side_cell(side: &DiffSide, is_left: bool, cx: &App) -> Div {
             Some(theme::color(theme::GREEN)),
             theme.foreground,
         ),
-        SideKind::Empty => (Some(theme::color(theme::PANEL_ALT)), None, theme.muted_foreground),
+        SideKind::Empty => (
+            Some(theme::color(theme::PANEL_ALT)),
+            None,
+            theme.muted_foreground,
+        ),
     };
 
     let mut cell = div()
@@ -838,7 +1117,11 @@ fn side_cell(side: &DiffSide, is_left: bool, cx: &App) -> Div {
                 .text_right()
                 .text_size(px(11.))
                 .text_color(theme.muted_foreground)
-                .child(side.number.map(|number| number.to_string()).unwrap_or_default()),
+                .child(
+                    side.number
+                        .map(|number| number.to_string())
+                        .unwrap_or_default(),
+                ),
         )
         .child(
             div()
@@ -852,9 +1135,7 @@ fn side_cell(side: &DiffSide, is_left: bool, cx: &App) -> Div {
                 .line_height(px(18.))
                 .text_color(text_color)
                 .when(side.text.is_empty(), |this| this.child(" "))
-                .when(!side.text.is_empty(), |this| {
-                    this.child(styled_line(side))
-                }),
+                .when(!side.text.is_empty(), |this| this.child(styled_line(side))),
         );
 
     if !is_left {
@@ -900,4 +1181,93 @@ fn stat(label: &'static str, count: usize, tint: u32) -> Div {
         .text_size(px(11.))
         .child(div().text_color(color).child(count.to_string()))
         .child(div().text_color(theme::color(theme::MUTED)).child(label))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{DiffItem, diff_display_items, display_index_for_row, unified_line_sides};
+    use crate::diff::DiffResult;
+
+    fn ten_line_diff() -> DiffResult {
+        DiffResult::compute(
+            "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\ngolf\nhotel\nindia\njuliet\n",
+            "alpha\nbravo\ncharlie\ndelta\nECHO\nfoxtrot\ngolf\nhotel\nindia\njuliet\n",
+        )
+    }
+
+    #[test]
+    fn only_changes_keeps_two_context_rows_and_collapses_the_rest() {
+        let diff = ten_line_diff();
+        let items = diff_display_items(&diff, true, &HashSet::new());
+
+        assert_eq!(
+            items,
+            vec![
+                DiffItem::Gap { start: 0, end: 2 },
+                DiffItem::Row(2),
+                DiffItem::Row(3),
+                DiffItem::Row(4),
+                DiffItem::Row(5),
+                DiffItem::Row(6),
+                DiffItem::Gap { start: 7, end: 10 },
+            ]
+        );
+    }
+
+    #[test]
+    fn expanding_a_gap_reveals_its_rows() {
+        let diff = ten_line_diff();
+        let expanded = HashSet::from([0]);
+        let items = diff_display_items(&diff, true, &expanded);
+
+        assert_eq!(items[0], DiffItem::Row(0));
+        assert_eq!(items[1], DiffItem::Row(1));
+        assert_eq!(items[2], DiffItem::Row(2));
+        assert!(!items.contains(&DiffItem::Gap { start: 0, end: 2 }));
+        assert!(items.contains(&DiffItem::Gap { start: 7, end: 10 }));
+    }
+
+    #[test]
+    fn single_hidden_rows_stay_visible() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\ndelta\n",
+            "alpha\nbravo\ncharlie\nDELTA\n",
+        );
+        let items = diff_display_items(&diff, true, &HashSet::new());
+
+        assert_eq!(items[0], DiffItem::Row(0));
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, DiffItem::Gap { .. }))
+        );
+    }
+
+    #[test]
+    fn unified_scroll_index_accounts_for_two_line_rows() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\ndelta\n",
+            "alpha\nBRAVO\ncharlie\ndelta\n",
+        );
+        let items = diff_display_items(&diff, false, &HashSet::new());
+
+        // Row 0 is one equal line, row 1 renders removed + added, row 2 one
+        // equal line, so row 3 starts at unified line index 4.
+        assert_eq!(display_index_for_row(&items, &diff.rows, 3, true), Some(4));
+        assert_eq!(display_index_for_row(&items, &diff.rows, 3, false), Some(3));
+    }
+
+    #[test]
+    fn equal_rows_render_once_in_unified_mode() {
+        let diff = ten_line_diff();
+        let (show_left, show_right) = unified_line_sides(&diff.rows[0]);
+        assert!(show_left);
+        assert!(!show_right);
+
+        let (show_left, show_right) = unified_line_sides(&diff.rows[4]);
+        assert!(show_left);
+        assert!(show_right);
+    }
 }

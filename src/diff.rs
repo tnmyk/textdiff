@@ -65,6 +65,23 @@ pub struct DiffRow {
     pub right: DiffSide,
 }
 
+impl DiffRow {
+    /// True when either side of the row has an added or removed line.
+    pub fn is_change(&self) -> bool {
+        matches!(self.left.kind, SideKind::Removed | SideKind::Added)
+            || matches!(self.right.kind, SideKind::Removed | SideKind::Added)
+    }
+}
+
+/// A contiguous run of changed rows.
+///
+/// `start` is inclusive and `end` is exclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChangeHunk {
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DiffResult {
     pub rows: Vec<DiffRow>,
@@ -72,6 +89,29 @@ pub struct DiffResult {
 }
 
 impl DiffResult {
+    /// Group contiguous changed rows into hunks for navigation and collapsing.
+    pub fn change_hunks(&self) -> Vec<ChangeHunk> {
+        let mut hunks = Vec::new();
+        let mut start = None;
+
+        for (index, row) in self.rows.iter().enumerate() {
+            if row.is_change() {
+                start.get_or_insert(index);
+            } else if let Some(start) = start.take() {
+                hunks.push(ChangeHunk { start, end: index });
+            }
+        }
+
+        if let Some(start) = start {
+            hunks.push(ChangeHunk {
+                start,
+                end: self.rows.len(),
+            });
+        }
+
+        hunks
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn compute(original: &str, modified: &str) -> Self {
         Self::compute_with_options(original, modified, CompareOptions::default())
@@ -649,5 +689,39 @@ mod tests {
         assert_eq!(diff.rows[2].right.number, Some(3));
         assert_eq!(diff.rows[3].left.number, Some(3));
         assert_eq!(diff.rows[3].right.number, Some(4));
+    }
+
+    #[test]
+    fn change_hunks_group_contiguous_changed_rows() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n",
+            "alpha\nBRAVO\ncharlie\ndelta\nECHO\nfoxtrot\n",
+        );
+        assert_eq!(
+            diff.change_hunks(),
+            vec![
+                ChangeHunk { start: 1, end: 2 },
+                ChangeHunk { start: 4, end: 5 },
+            ]
+        );
+    }
+
+    #[test]
+    fn adjacent_insertions_and_deletions_share_one_hunk() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\n",
+            "alpha\nnew one\nnew two\ncharlie\n",
+        );
+        let hunks = diff.change_hunks();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].start, 1);
+        assert_eq!(hunks[0].end, 3);
+        assert_eq!(hunks[0].end - hunks[0].start, 2);
+    }
+
+    #[test]
+    fn identical_diff_has_no_change_hunks() {
+        let diff = DiffResult::compute("alpha\nbravo\n", "alpha\nbravo\n");
+        assert!(diff.change_hunks().is_empty());
     }
 }
