@@ -139,20 +139,20 @@ impl DiffResult {
                         let new = inserted[index];
                         let old_text = strip_line_ending(old.value()).to_string();
                         let new_text = strip_line_ending(new.value()).to_string();
-                        let word_diff = TextDiff::from_words(&old_text, &new_text);
+                        let char_diff = TextDiff::from_chars(&old_text, &new_text);
 
                         rows.push(DiffRow {
                             left: DiffSide {
                                 number: old.old_index().map(|index| index + 1),
                                 kind: SideKind::Removed,
                                 text: old_text.clone(),
-                                segments: segments_for(&word_diff, ChangeTag::Delete, &old_text),
+                                segments: segments_for(&char_diff, ChangeTag::Delete, &old_text),
                             },
                             right: DiffSide {
                                 number: new.new_index().map(|index| index + 1),
                                 kind: SideKind::Added,
                                 text: new_text.clone(),
-                                segments: segments_for(&word_diff, ChangeTag::Insert, &new_text),
+                                segments: segments_for(&char_diff, ChangeTag::Insert, &new_text),
                             },
                         });
                         stats.changed += 1;
@@ -200,12 +200,12 @@ impl DiffResult {
 }
 
 fn segments_for(
-    word_diff: &TextDiff<'_, '_, str>,
+    char_diff: &TextDiff<'_, '_, str>,
     side: ChangeTag,
     expected: &str,
 ) -> Vec<Segment> {
     let mut segments = Vec::new();
-    for change in word_diff.iter_all_changes() {
+    for change in char_diff.iter_all_changes() {
         let keep = match side {
             ChangeTag::Delete => change.tag() != ChangeTag::Insert,
             ChangeTag::Insert => change.tag() != ChangeTag::Delete,
@@ -244,6 +244,21 @@ fn strip_line_ending(line: &str) -> &str {
 mod tests {
     use super::*;
 
+    fn emphasized(side: &DiffSide) -> String {
+        side.segments
+            .iter()
+            .filter(|segment| segment.emphasis)
+            .map(|segment| segment.text.as_str())
+            .collect()
+    }
+
+    fn joined(side: &DiffSide) -> String {
+        side.segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect()
+    }
+
     #[test]
     fn identical_text_is_unchanged() {
         let diff = DiffResult::compute("alpha\nbravo\n", "alpha\nbravo\n");
@@ -272,18 +287,35 @@ mod tests {
     }
 
     #[test]
-    fn replacement_pairs_lines_and_marks_changed_words() {
+    fn replacement_pairs_lines_and_marks_changed_characters() {
         let diff = DiffResult::compute("hello world\n", "hello brave world\n");
         assert_eq!(diff.stats.changed, 1);
         assert_eq!(diff.rows.len(), 1);
         assert_eq!(diff.rows[0].left.kind, SideKind::Removed);
         assert_eq!(diff.rows[0].right.kind, SideKind::Added);
-        assert!(diff.rows[0]
-            .right
-            .segments
-            .iter()
-            .any(|segment| segment.emphasis && segment.text.contains("brave")));
+        assert!(emphasized(&diff.rows[0].right).contains("brave"));
         assert_eq!(diff.rows[0].right.text, "hello brave world");
+    }
+
+    #[test]
+    fn single_character_change_highlights_only_that_character() {
+        let diff = DiffResult::compute("hello\n", "hallo\n");
+        assert_eq!(diff.stats.changed, 1);
+        assert_eq!(diff.rows.len(), 1);
+        assert_eq!(emphasized(&diff.rows[0].left), "e");
+        assert_eq!(emphasized(&diff.rows[0].right), "a");
+        assert_eq!(diff.rows[0].left.text, "hello");
+        assert_eq!(diff.rows[0].right.text, "hallo");
+    }
+
+    #[test]
+    fn utf8_and_emoji_changes_do_not_split_characters() {
+        let diff = DiffResult::compute("café 😀 there\n", "cafè 😃 there\n");
+        assert_eq!(diff.stats.changed, 1);
+        assert_eq!(emphasized(&diff.rows[0].left), "é😀");
+        assert_eq!(emphasized(&diff.rows[0].right), "è😃");
+        assert_eq!(joined(&diff.rows[0].left), diff.rows[0].left.text);
+        assert_eq!(joined(&diff.rows[0].right), diff.rows[0].right.text);
     }
 
     #[test]
