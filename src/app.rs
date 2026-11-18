@@ -11,8 +11,20 @@ use gpui_kit::*;
 use crate::diff::{DiffResult, DiffRow, DiffSide, SideKind};
 use crate::theme;
 
+mod actions {
+    gpui_kit::actions!(diff_nav, [NextChange, PreviousChange]);
+}
+
 const DIFF_CONTEXT_ROWS: usize = 2;
 const MIN_COLLAPSED_ROWS: usize = 2;
+const DIFF_KEY_CONTEXT: &str = "DiffNav";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("n", actions::NextChange, Some(DIFF_KEY_CONTEXT)),
+        KeyBinding::new("p", actions::PreviousChange, Some(DIFF_KEY_CONTEXT)),
+    ]);
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -41,6 +53,9 @@ pub struct DiffApp {
     mobile_pane: MobilePane,
     only_changes: bool,
     expanded_gaps: HashSet<usize>,
+    active_hunk: Option<usize>,
+    scroll_handle: ScrollHandle,
+    diff_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -63,6 +78,7 @@ impl DiffApp {
                 }
             }),
         ];
+        let diff_focus = cx.focus_handle();
 
         Self {
             mode: Mode::Edit,
@@ -72,17 +88,27 @@ impl DiffApp {
             mobile_pane: MobilePane::Original,
             only_changes: false,
             expanded_gaps: HashSet::new(),
+            active_hunk: None,
+            scroll_handle: ScrollHandle::new(),
+            diff_focus,
             _subscriptions: subscriptions,
         }
     }
 
-    fn compare(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn compare(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let original = self.original.read(cx).value().to_string();
         let modified = self.modified.read(cx).value().to_string();
         self.diff = DiffResult::compute(&original, &modified);
         self.mode = Mode::Diff;
-        self.expanded_gaps.clear();
+        self.reset_navigation();
+        self.diff_focus.focus(window, cx);
         cx.notify();
+    }
+
+    fn reset_navigation(&mut self) {
+        self.active_hunk = None;
+        self.expanded_gaps.clear();
+        self.scroll_handle.set_offset(point(px(0.), px(0.)));
     }
 
     fn back(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -99,7 +125,7 @@ impl DiffApp {
         original_state.update(cx, |state, cx| state.set_value(modified, window, cx));
         modified_state.update(cx, |state, cx| state.set_value(original, window, cx));
         self.diff = DiffResult::default();
-        self.expanded_gaps.clear();
+        self.reset_navigation();
         self.mode = Mode::Edit;
         cx.notify();
     }
@@ -110,7 +136,7 @@ impl DiffApp {
         original_state.update(cx, |state, cx| state.set_value("", window, cx));
         modified_state.update(cx, |state, cx| state.set_value("", window, cx));
         self.diff = DiffResult::default();
-        self.expanded_gaps.clear();
+        self.reset_navigation();
         self.mode = Mode::Edit;
         cx.notify();
     }
@@ -131,13 +157,51 @@ impl DiffApp {
         state.read(cx).value().lines().count()
     }
 
-    fn toggle_only_changes(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn toggle_only_changes(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.only_changes = !self.only_changes;
+        self.diff_focus.focus(window, cx);
         cx.notify();
     }
 
-    fn expand_gap(&mut self, start: usize, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn next_change(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.jump_to_change(1, window, cx);
+    }
+
+    fn previous_change(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.jump_to_change(-1, window, cx);
+    }
+
+    fn jump_to_change(&mut self, step: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let hunks = self.diff.change_hunks();
+        if hunks.is_empty() {
+            self.active_hunk = None;
+            cx.notify();
+            return;
+        }
+
+        let next = match self.active_hunk.filter(|index| *index < hunks.len()) {
+            Some(current) if step >= 0 => (current + 1) % hunks.len(),
+            Some(current) => (current + hunks.len() - 1) % hunks.len(),
+            None if step >= 0 => 0,
+            None => hunks.len() - 1,
+        };
+        self.active_hunk = Some(next);
+
+        let narrow = window.viewport_size().width < px(760.);
+        let items = diff_display_items(&self.diff, self.only_changes, &self.expanded_gaps);
+        if let Some(index) =
+            display_index_for_row(&items, &self.diff.rows, hunks[next].start, narrow)
+        {
+            self.scroll_handle.scroll_to_item(index);
+        }
+
+        self.diff_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn expand_gap(&mut self, start: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.expanded_gaps.insert(start);
+        self.diff_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -411,12 +475,29 @@ impl DiffApp {
                 .into_any_element()
         };
 
+        let can_navigate = !hunks.is_empty();
+        let position_label = match self.active_hunk.filter(|index| *index < hunks.len()) {
+            Some(index) => format!("{} of {}", index + 1, hunks.len()),
+            None if hunks.is_empty() => "No changes".to_string(),
+            None => format!("— of {}", hunks.len()),
+        };
+
         let only_changes = Button::new("only-changes")
             .ghost()
             .label("Only changes")
             .selected(self.only_changes)
             .toggled(self.only_changes)
             .on_click(cx.listener(|this, _, window, cx| this.toggle_only_changes(window, cx)));
+        let previous = Button::new("previous-change")
+            .ghost()
+            .label("← Previous")
+            .disabled(!can_navigate)
+            .on_click(cx.listener(|this, _, window, cx| this.previous_change(window, cx)));
+        let next = Button::new("next-change")
+            .ghost()
+            .label("Next →")
+            .disabled(!can_navigate)
+            .on_click(cx.listener(|this, _, window, cx| this.next_change(window, cx)));
 
         div()
             .flex()
@@ -427,6 +508,18 @@ impl DiffApp {
             .pt(px(20.))
             .pb(if narrow { px(12.) } else { px(18.) })
             .gap_3()
+            .track_focus(&self.diff_focus)
+            .key_context(DIFF_KEY_CONTEXT)
+            .on_action(
+                cx.listener(|this, _: &actions::NextChange, window, cx| {
+                    this.next_change(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::PreviousChange, window, cx| {
+                    this.previous_change(window, cx)
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -485,10 +578,27 @@ impl DiffApp {
                 div()
                     .flex()
                     .items_center()
+                    .justify_between()
                     .flex_wrap()
                     .gap_2()
                     .when(narrow, |this| this.flex_col().items_start())
-                    .child(only_changes),
+                    .child(only_changes)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(previous)
+                            .child(
+                                div()
+                                    .min_w(px(64.))
+                                    .text_center()
+                                    .text_xs()
+                                    .text_color(muted_foreground)
+                                    .child(position_label),
+                            )
+                            .child(next),
+                    ),
             )
             .child(
                 div()
@@ -510,6 +620,7 @@ impl DiffApp {
                             .flex_1()
                             .min_h_0()
                             .overflow_scroll()
+                            .track_scroll(&self.scroll_handle)
                             .children(body),
                     ),
             )
@@ -728,6 +839,38 @@ fn push_unchanged_rows(
     } else {
         items.push(DiffItem::Gap { start, end });
     }
+}
+
+/// Map a diff row index to the index of its direct child in the scroll
+/// container. Unified mode can render up to two lines per diff row.
+fn display_index_for_row(
+    items: &[DiffItem],
+    rows: &[DiffRow],
+    row_index: usize,
+    unified: bool,
+) -> Option<usize> {
+    let mut index = 0;
+    for item in items {
+        match *item {
+            DiffItem::Row(row) => {
+                if row == row_index {
+                    return Some(index);
+                }
+                index += if unified {
+                    unified_line_count(&rows[row])
+                } else {
+                    1
+                };
+            }
+            DiffItem::Gap { .. } => index += 1,
+        }
+    }
+    None
+}
+
+fn unified_line_count(row: &DiffRow) -> usize {
+    let (show_left, show_right) = unified_line_sides(row);
+    usize::from(show_left) + usize::from(show_right)
 }
 
 /// Equal rows render once. Change rows render each populated side, removed
@@ -965,7 +1108,7 @@ fn stat(label: &'static str, count: usize, tint: u32) -> Div {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{DiffItem, diff_display_items, unified_line_sides};
+    use super::{DiffItem, diff_display_items, display_index_for_row, unified_line_sides};
     use crate::diff::DiffResult;
 
     fn ten_line_diff() -> DiffResult {
@@ -1021,6 +1164,20 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, DiffItem::Gap { .. }))
         );
+    }
+
+    #[test]
+    fn unified_scroll_index_accounts_for_two_line_rows() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\ndelta\n",
+            "alpha\nBRAVO\ncharlie\ndelta\n",
+        );
+        let items = diff_display_items(&diff, false, &HashSet::new());
+
+        // Row 0 is one equal line, row 1 renders removed + added, row 2 one
+        // equal line, so row 3 starts at unified line index 4.
+        assert_eq!(display_index_for_row(&items, &diff.rows, 3, true), Some(4));
+        assert_eq!(display_index_for_row(&items, &diff.rows, 3, false), Some(3));
     }
 
     #[test]
