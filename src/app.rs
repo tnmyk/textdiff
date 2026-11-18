@@ -504,7 +504,7 @@ fn header(cx: &App, narrow: bool) -> Div {
                 .gap_4()
                 .child(
                     Link::new("github")
-                        .href("https://github.com/tnmyk/diff")
+                        .href("https://github.com/tnmyk/textdiff")
                         .text_sm()
                         .child("GitHub"),
                 ),
