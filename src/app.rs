@@ -6,7 +6,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::diff::{DiffResult, DiffRow, DiffSide, SideKind};
+use crate::diff::{CompareOptions, DiffResult, DiffRow, DiffSide, SideKind};
 use crate::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub struct DiffApp {
     original: Entity<TextareaState>,
     modified: Entity<TextareaState>,
     diff: DiffResult,
+    options: CompareOptions,
     mobile_pane: MobilePane,
     _subscriptions: Vec<Subscription>,
 }
@@ -57,6 +58,7 @@ impl DiffApp {
             original,
             modified,
             diff: DiffResult::default(),
+            options: CompareOptions::default(),
             mobile_pane: MobilePane::Original,
             _subscriptions: subscriptions,
         }
@@ -65,7 +67,7 @@ impl DiffApp {
     fn compare(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
         let original = self.original.read(cx).value().to_string();
         let modified = self.modified.read(cx).value().to_string();
-        self.diff = DiffResult::compute(&original, &modified);
+        self.diff = DiffResult::compute_with_options(&original, &modified, self.options);
         self.mode = Mode::Diff;
         cx.notify();
     }
@@ -247,9 +249,76 @@ impl DiffApp {
             .pb(if narrow { px(12.) } else { px(18.) })
             .gap_4()
             .child(panes)
+            .child(self.options_row(cx))
             .child(actions);
 
         content.into_any_element()
+    }
+
+    fn options_row(&self, cx: &mut Context<'_, Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+        div()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(muted)
+                    .child("Ignore"),
+            )
+            .child(self.option_toggle("opt-case", "Case", self.options.ignore_case, cx))
+            .child(self.option_toggle(
+                "opt-whitespace",
+                "Whitespace",
+                self.options.ignore_whitespace,
+                cx,
+            ))
+            .child(self.option_toggle(
+                "opt-blank-lines",
+                "Blank lines",
+                self.options.ignore_blank_lines,
+                cx,
+            ))
+    }
+
+    fn option_toggle(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        active: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .h(px(26.))
+            .px(px(10.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme.border)
+            .cursor_pointer()
+            .when(active, |this| {
+                this.bg(theme.group_box).text_color(theme.foreground)
+            })
+            .when(!active, |this| this.text_color(theme.muted_foreground))
+            .child(div().text_size(px(11.)).child(label))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                match id {
+                    "opt-case" => this.options.ignore_case = !this.options.ignore_case,
+                    "opt-whitespace" => {
+                        this.options.ignore_whitespace = !this.options.ignore_whitespace
+                    }
+                    "opt-blank-lines" => {
+                        this.options.ignore_blank_lines = !this.options.ignore_blank_lines
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            }))
     }
 
     fn mobile_tabs(
@@ -328,6 +397,12 @@ impl DiffApp {
         let theme = cx.theme();
         let stats = self.diff.stats;
         let rows = &self.diff.rows;
+        let filters = self.options.active_labels();
+        let filter_label = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" · ignoring {}", filters.join(", "))
+        };
 
         let body = if narrow {
             unified_rows(rows, cx)
@@ -402,7 +477,11 @@ impl DiffApp {
                                         div()
                                             .text_xs()
                                             .text_color(theme.muted_foreground)
-                                            .child(format!("{} rows", rows.len())),
+                                            .child(format!(
+                                                "{} rows{}",
+                                                rows.len(),
+                                                filter_label
+                                            )),
                                     ),
                             ),
                     )
