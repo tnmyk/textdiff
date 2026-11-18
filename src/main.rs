@@ -3,6 +3,7 @@
 
 mod app;
 mod diff;
+mod file_io;
 mod theme;
 
 use std::borrow::Cow;
@@ -11,6 +12,15 @@ use app::DiffApp;
 use gpui_kit::*;
 
 gpui_kit::assets::icon_assets!(AppAssets, [ArrowLeftRight, Trash]);
+
+#[cfg(target_family = "wasm")]
+use std::cell::RefCell;
+
+#[cfg(target_family = "wasm")]
+thread_local! {
+    static APPLICATION: RefCell<Option<ApplicationHandle>> = const { RefCell::new(None) };
+    static APP_VIEW: RefCell<Option<WeakEntity<DiffApp>>> = const { RefCell::new(None) };
+}
 
 fn load_fonts(cx: &mut App) {
     cx.text_system()
@@ -43,12 +53,60 @@ fn launch(cx: &mut App) {
     #[cfg(target_family = "wasm")]
     let options = WindowOptions::default();
 
-    gpui_kit::open_window(options, cx, |window, cx| {
+    let (_, view) = gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| DiffApp::new(window, cx))
     })
     .expect("failed to open window");
 
+    #[cfg(target_family = "wasm")]
+    APP_VIEW.with(|slot| *slot.borrow_mut() = Some(view.downgrade()));
+    #[cfg(not(target_family = "wasm"))]
+    let _ = view;
+
     cx.activate(true);
+}
+
+#[cfg(target_family = "wasm")]
+fn with_app_view(update: impl FnOnce(&mut DiffApp, &mut Window, &mut Context<'_, DiffApp>)) {
+    let view = APP_VIEW.with(|slot| slot.borrow().clone());
+    let Some(view) = view else {
+        return;
+    };
+
+    APPLICATION.with(|slot| {
+        let slot = slot.borrow();
+        let Some(application) = slot.as_ref() else {
+            return;
+        };
+
+        let _ = application.update(|cx| {
+            let _ = view.update_in(cx, update);
+        });
+    });
+}
+
+/// Called by `index.html` after a file is read as UTF-8 text.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn load_file_text(pane: &str, name: &str, text: String) {
+    let Some(target) = app::FileTarget::from_id(pane) else {
+        let message = "Unknown editor pane for the selected file.".to_string();
+        with_app_view(move |app, _, cx| app.set_file_error(message, cx));
+        return;
+    };
+
+    let name = name.to_string();
+    with_app_view(move |app, window, cx| {
+        app.load_text_named(target, name, text, window, cx);
+    });
+}
+
+/// Called by `index.html` when a file must be rejected before decoding.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn report_file_error(message: &str) {
+    let message = message.to_string();
+    with_app_view(move |app, _, cx| app.set_file_error(message, cx));
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -60,13 +118,7 @@ fn main() {
 
 #[cfg(target_family = "wasm")]
 fn main() {
-    use std::cell::RefCell;
-
     use gpui_kit::web::{WebBackendPreference, WebPlatform};
-
-    thread_local! {
-        static APPLICATION: RefCell<Option<ApplicationHandle>> = const { RefCell::new(None) };
-    }
 
     gpui_kit::platform::web_init();
 

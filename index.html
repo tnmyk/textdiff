@@ -110,6 +110,12 @@
     </style>
 </head>
 <body>
+    <input
+        id="file-input"
+        type="file"
+        hidden
+        accept="text/*,.txt,.md,.markdown,.log,.csv,.json,.toml,.yaml,.yml,.ini,.cfg,.rs,.js,.mjs,.ts,.tsx,.jsx,.html,.css,.py,.go,.java,.c,.h,.cc,.cpp,.hpp,.sh,.xml,.sql"
+    />
     <div id="loading">
         <div class="mark">Text Diff</div>
         <div class="spinner"></div>
@@ -152,6 +158,84 @@
                     console.error("Text Diff failed to start after", Date.now() - started, "ms");
                 }
             }, 30000);
+        })();
+    </script>
+    <script>
+        (() => {
+            const MAX_FILE_BYTES = 10 * 1024 * 1024;
+            const input = document.getElementById("file-input");
+            let targetPane = "original";
+
+            const bindings = () => window.wasmBindings;
+
+            const showError = (message) => {
+                const wasm = bindings();
+                if (wasm && typeof wasm.report_file_error === "function") {
+                    wasm.report_file_error(String(message));
+                } else {
+                    console.error(message);
+                }
+            };
+
+            const paneAt = (clientX) => {
+                const canvas = document.querySelector("body > canvas");
+                if (!canvas) return "original";
+                const rect = canvas.getBoundingClientRect();
+                return clientX < rect.left + rect.width / 2 ? "original" : "modified";
+            };
+
+            const loadFile = async (pane, file) => {
+                if (!file) return;
+
+                if (file.size > MAX_FILE_BYTES) {
+                    const megabytes = (file.size / (1024 * 1024)).toFixed(1);
+                    showError(`${file.name} is too large (${megabytes} MB). The limit is 10 MB.`);
+                    return;
+                }
+
+                let text;
+                try {
+                    const buffer = await file.arrayBuffer();
+                    text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+                } catch (_) {
+                    showError(`${file.name} is not valid UTF-8 text.`);
+                    return;
+                }
+
+                const wasm = bindings();
+                if (!wasm || typeof wasm.load_file_text !== "function") {
+                    showError("The file loader is still starting. Try again in a moment.");
+                    return;
+                }
+                wasm.load_file_text(pane, file.name, text);
+            };
+
+            window.diffOpenFile = (pane) => {
+                targetPane = pane === "modified" ? "modified" : "original";
+                input.value = "";
+                input.click();
+            };
+
+            input.addEventListener("change", () => {
+                const file = input.files && input.files[0];
+                if (file) loadFile(targetPane, file);
+                input.value = "";
+            });
+
+            window.addEventListener("dragover", (event) => {
+                const types = event.dataTransfer && event.dataTransfer.types;
+                if (types && Array.from(types).includes("Files")) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                }
+            });
+
+            window.addEventListener("drop", (event) => {
+                const files = event.dataTransfer && event.dataTransfer.files;
+                if (!files || files.length === 0) return;
+                event.preventDefault();
+                loadFile(paneAt(event.clientX), files[0]);
+            });
         })();
     </script>
 </body>
