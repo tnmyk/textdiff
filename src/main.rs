@@ -102,6 +102,29 @@ pub fn load_file_text(pane: &str, name: &str, text: String) {
     });
 }
 
+/// Called by `index.html` to decide which pane a drop belongs to in the
+/// narrow tabbed layout.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn active_pane() -> String {
+    let view = APP_VIEW.with(|slot| slot.borrow().clone());
+    let Some(view) = view else {
+        return "original".to_string();
+    };
+
+    let mut pane = "original";
+    APPLICATION.with(|slot| {
+        if let Some(application) = slot.borrow().as_ref() {
+            application.update(|cx| {
+                pane = view
+                    .read_with(cx, |app, _| app.mobile_pane_id())
+                    .unwrap_or("original");
+            });
+        }
+    });
+    pane.to_string()
+}
+
 /// Called by `index.html` when a file must be rejected before decoding.
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen]
@@ -112,9 +135,7 @@ pub fn report_file_error(message: &str) {
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {
-    gpui_kit::application()
-        .with_assets(AppAssets)
-        .run(launch);
+    gpui_kit::application().with_assets(AppAssets).run(launch);
 }
 
 #[cfg(target_family = "wasm")]

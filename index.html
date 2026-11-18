@@ -177,11 +177,21 @@
                 }
             };
 
-            const paneAt = (clientX) => {
+            const paneAt = (event) => {
+                const wasm = bindings();
+                if (
+                    window.innerWidth < 760 &&
+                    wasm &&
+                    typeof wasm.active_pane === "function"
+                ) {
+                    return wasm.active_pane();
+                }
                 const canvas = document.querySelector("body > canvas");
                 if (!canvas) return "original";
                 const rect = canvas.getBoundingClientRect();
-                return clientX < rect.left + rect.width / 2 ? "original" : "modified";
+                return event.clientX < rect.left + rect.width / 2
+                    ? "original"
+                    : "modified";
             };
 
             const loadFile = async (pane, file) => {
@@ -234,7 +244,12 @@
                 const files = event.dataTransfer && event.dataTransfer.files;
                 if (!files || files.length === 0) return;
                 event.preventDefault();
-                loadFile(paneAt(event.clientX), files[0]);
+                // Ignore drops on the header/footer; only the editor area
+                // should load files.
+                if (event.clientY < 56 || event.clientY > window.innerHeight - 32) {
+                    return;
+                }
+                loadFile(paneAt(event), files[0]);
             });
         })();
     </script>
