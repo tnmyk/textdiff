@@ -3,21 +3,6 @@ const WASM_BR_PATH = "/diff_bg.wasm.br";
 // Fixed filename, so keep the cache window short enough to pick up deploys.
 const WASM_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
-function acceptsBrotli(request) {
-  const header = request.headers.get("Accept-Encoding");
-  // Cloudflare may strip Accept-Encoding from the Worker request. This app
-  // already requires WebGPU/WebGL2, whose browsers all support brotli.
-  if (!header) return true;
-
-  return header.split(",").some((entry) => {
-    const [coding, ...params] = entry.trim().toLowerCase().split(";");
-    if (coding !== "br") return false;
-
-    const q = params.map((param) => param.trim()).find((param) => param.startsWith("q="));
-    return q === undefined || Number.parseFloat(q.slice(2)) > 0;
-  });
-}
-
 function brotliHeaders(etag) {
   const headers = new Headers({
     "Content-Type": "application/wasm",
@@ -74,8 +59,10 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === WASM_PATH) {
-      if (request.method === "GET" && acceptsBrotli(request)) {
+      if (request.method === "GET") {
         try {
+          // WebGPU browsers all support brotli. Serve the smaller stored copy
+          // directly instead of trusting the edge-normalized Accept-Encoding.
           const response = await serveBrotliWasm(request, env, url);
           if (response) return response;
         } catch {
