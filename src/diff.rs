@@ -1,6 +1,29 @@
 use similar::{ChangeTag, TextDiff};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompareOptions {
+    pub ignore_case: bool,
+    pub ignore_whitespace: bool,
+    pub ignore_blank_lines: bool,
+}
+
+impl CompareOptions {
+    pub fn active_labels(&self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.ignore_case {
+            labels.push("case");
+        }
+        if self.ignore_whitespace {
+            labels.push("whitespace");
+        }
+        if self.ignore_blank_lines {
+            labels.push("blank lines");
+        }
+        labels
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DiffStats {
     pub added: usize,
     pub removed: usize,
@@ -49,77 +72,70 @@ pub struct DiffResult {
 }
 
 impl DiffResult {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn compute(original: &str, modified: &str) -> Self {
+        Self::compute_with_options(original, modified, CompareOptions::default())
+    }
+
+    pub fn compute_with_options(original: &str, modified: &str, options: CompareOptions) -> Self {
         // Treat CRLF and lone CR as ordinary line endings so a checkout on a
         // different platform does not show every line as changed.
         let original = original.replace("\r\n", "\n").replace('\r', "\n");
         let modified = modified.replace("\r\n", "\n").replace('\r', "\n");
-        let diff = TextDiff::from_lines(&original, &modified);
-        let mut rows = Vec::new();
+        let old_meta = line_meta(&original, options);
+        let new_meta = line_meta(&modified, options);
+
+        // The comparison sequence contains only the lines the options ask us to
+        // compare. Keeping a separate map back to the metadata means every row
+        // still shows the user's original text and line number.
+        let old_seq: Vec<usize> = (0..old_meta.len())
+            .filter(|&index| old_meta[index].compared)
+            .collect();
+        let new_seq: Vec<usize> = (0..new_meta.len())
+            .filter(|&index| new_meta[index].compared)
+            .collect();
+        let old_keys: Vec<&str> = old_seq
+            .iter()
+            .map(|&index| old_meta[index].key.as_str())
+            .collect();
+        let new_keys: Vec<&str> = new_seq
+            .iter()
+            .map(|&index| new_meta[index].key.as_str())
+            .collect();
+
+        let diff = TextDiff::from_slices(&old_keys, &new_keys);
+        let mut specs = Vec::new();
         let mut stats = DiffStats::default();
 
         for op in diff.ops() {
             match op {
                 similar::DiffOp::Equal { .. } => {
                     for change in diff.iter_changes(op) {
-                        let text = strip_line_ending(change.value()).to_string();
-                        rows.push(DiffRow {
-                            left: DiffSide {
-                                number: change.old_index().map(|index| index + 1),
-                                kind: SideKind::Equal,
-                                text: text.clone(),
-                                segments: vec![Segment {
-                                    text,
-                                    emphasis: false,
-                                }],
-                            },
-                            right: DiffSide {
-                                number: change.new_index().map(|index| index + 1),
-                                kind: SideKind::Equal,
-                                text: strip_line_ending(change.value()).to_string(),
-                                segments: vec![Segment {
-                                    text: strip_line_ending(change.value()).to_string(),
-                                    emphasis: false,
-                                }],
-                            },
-                        });
-                        stats.unchanged += 1;
+                        if let (Some(old), Some(new)) = (change.old_index(), change.new_index()) {
+                            specs.push(equal_spec(
+                                old_seq[old],
+                                new_seq[new],
+                                &old_meta,
+                                &new_meta,
+                            ));
+                            stats.unchanged += 1;
+                        }
                     }
                 }
                 similar::DiffOp::Delete { .. } => {
                     for change in diff.iter_changes(op) {
-                        let text = strip_line_ending(change.value()).to_string();
-                        rows.push(DiffRow {
-                            left: DiffSide {
-                                number: change.old_index().map(|index| index + 1),
-                                kind: SideKind::Removed,
-                                segments: vec![Segment {
-                                    text: text.clone(),
-                                    emphasis: false,
-                                }],
-                                text,
-                            },
-                            right: DiffSide::default(),
-                        });
-                        stats.removed += 1;
+                        if let Some(index) = change.old_index() {
+                            specs.push(removed_spec(old_seq[index], &old_meta));
+                            stats.removed += 1;
+                        }
                     }
                 }
                 similar::DiffOp::Insert { .. } => {
                     for change in diff.iter_changes(op) {
-                        let text = strip_line_ending(change.value()).to_string();
-                        rows.push(DiffRow {
-                            left: DiffSide::default(),
-                            right: DiffSide {
-                                number: change.new_index().map(|index| index + 1),
-                                kind: SideKind::Added,
-                                segments: vec![Segment {
-                                    text: text.clone(),
-                                    emphasis: false,
-                                }],
-                                text,
-                            },
-                        });
-                        stats.added += 1;
+                        if let Some(index) = change.new_index() {
+                            specs.push(added_spec(new_seq[index], &new_meta));
+                            stats.added += 1;
+                        }
                     }
                 }
                 similar::DiffOp::Replace { .. } => {
@@ -127,75 +143,275 @@ impl DiffResult {
                     let mut inserted = Vec::new();
                     for change in diff.iter_changes(op) {
                         match change.tag() {
-                            ChangeTag::Delete => deleted.push(change),
-                            ChangeTag::Insert => inserted.push(change),
+                            ChangeTag::Delete => {
+                                if let Some(index) = change.old_index() {
+                                    deleted.push(old_seq[index]);
+                                }
+                            }
+                            ChangeTag::Insert => {
+                                if let Some(index) = change.new_index() {
+                                    inserted.push(new_seq[index]);
+                                }
+                            }
                             ChangeTag::Equal => {}
                         }
                     }
 
                     let paired = deleted.len().min(inserted.len());
                     for index in 0..paired {
-                        let old = deleted[index];
-                        let new = inserted[index];
-                        let old_text = strip_line_ending(old.value()).to_string();
-                        let new_text = strip_line_ending(new.value()).to_string();
-                        let char_diff = TextDiff::from_chars(&old_text, &new_text);
+                        let old = &old_meta[deleted[index]];
+                        let new = &new_meta[inserted[index]];
+                        let char_diff = TextDiff::from_chars(&old.display, &new.display);
 
-                        rows.push(DiffRow {
-                            left: DiffSide {
-                                number: old.old_index().map(|index| index + 1),
-                                kind: SideKind::Removed,
-                                text: old_text.clone(),
-                                segments: segments_for(&char_diff, ChangeTag::Delete, &old_text),
-                            },
-                            right: DiffSide {
-                                number: new.new_index().map(|index| index + 1),
-                                kind: SideKind::Added,
-                                text: new_text.clone(),
-                                segments: segments_for(&char_diff, ChangeTag::Insert, &new_text),
-                            },
+                        specs.push(RowSpec {
+                            old: Some(deleted[index]),
+                            new: Some(inserted[index]),
+                            left_kind: SideKind::Removed,
+                            right_kind: SideKind::Added,
+                            left_segments: segments_for(
+                                &char_diff,
+                                ChangeTag::Delete,
+                                &old.display,
+                            ),
+                            right_segments: segments_for(
+                                &char_diff,
+                                ChangeTag::Insert,
+                                &new.display,
+                            ),
                         });
                         stats.changed += 1;
                     }
 
-                    for change in &deleted[paired..] {
-                        let text = strip_line_ending(change.value()).to_string();
-                        rows.push(DiffRow {
-                            left: DiffSide {
-                                number: change.old_index().map(|index| index + 1),
-                                kind: SideKind::Removed,
-                                segments: vec![Segment {
-                                    text: text.clone(),
-                                    emphasis: false,
-                                }],
-                                text,
-                            },
-                            right: DiffSide::default(),
-                        });
+                    for &index in &deleted[paired..] {
+                        specs.push(removed_spec(index, &old_meta));
                         stats.removed += 1;
                     }
 
-                    for change in &inserted[paired..] {
-                        let text = strip_line_ending(change.value()).to_string();
-                        rows.push(DiffRow {
-                            left: DiffSide::default(),
-                            right: DiffSide {
-                                number: change.new_index().map(|index| index + 1),
-                                kind: SideKind::Added,
-                                segments: vec![Segment {
-                                    text: text.clone(),
-                                    emphasis: false,
-                                }],
-                                text,
-                            },
-                        });
+                    for &index in &inserted[paired..] {
+                        specs.push(added_spec(index, &new_meta));
                         stats.added += 1;
                     }
                 }
             }
         }
 
+        let rows = build_rows(&specs, &old_meta, &new_meta);
         Self { rows, stats }
+    }
+}
+
+struct LineMeta {
+    number: usize,
+    display: String,
+    key: String,
+    compared: bool,
+}
+
+struct RowSpec {
+    old: Option<usize>,
+    new: Option<usize>,
+    left_kind: SideKind,
+    right_kind: SideKind,
+    left_segments: Vec<Segment>,
+    right_segments: Vec<Segment>,
+}
+
+fn line_meta(text: &str, options: CompareOptions) -> Vec<LineMeta> {
+    split_lines(text)
+        .into_iter()
+        .enumerate()
+        .map(|(index, display)| {
+            let key = comparison_key(&display, options);
+            let compared = !(options.ignore_blank_lines && key.trim().is_empty());
+            LineMeta {
+                number: index + 1,
+                display,
+                key,
+                compared,
+            }
+        })
+        .collect()
+}
+
+fn split_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = text.split('\n').map(|line| line.to_string()).collect();
+    if text.ends_with('\n') {
+        lines.pop();
+    }
+    lines
+}
+
+/// Comparison rule: `ignore_whitespace` collapses every run of Unicode
+/// whitespace to a single space and trims both ends; `ignore_case` lowercases
+/// the already whitespace-normalized line.
+fn comparison_key(line: &str, options: CompareOptions) -> String {
+    let mut key = if options.ignore_whitespace {
+        line.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        line.to_string()
+    };
+    if options.ignore_case {
+        key = key.to_lowercase();
+    }
+    key
+}
+
+fn equal_spec(old: usize, new: usize, old_meta: &[LineMeta], new_meta: &[LineMeta]) -> RowSpec {
+    RowSpec {
+        old: Some(old),
+        new: Some(new),
+        left_kind: SideKind::Equal,
+        right_kind: SideKind::Equal,
+        left_segments: plain_segments(&old_meta[old].display),
+        right_segments: plain_segments(&new_meta[new].display),
+    }
+}
+
+fn removed_spec(old: usize, old_meta: &[LineMeta]) -> RowSpec {
+    RowSpec {
+        old: Some(old),
+        new: None,
+        left_kind: SideKind::Removed,
+        right_kind: SideKind::Empty,
+        left_segments: plain_segments(&old_meta[old].display),
+        right_segments: Vec::new(),
+    }
+}
+
+fn added_spec(new: usize, new_meta: &[LineMeta]) -> RowSpec {
+    RowSpec {
+        old: None,
+        new: Some(new),
+        left_kind: SideKind::Empty,
+        right_kind: SideKind::Added,
+        left_segments: Vec::new(),
+        right_segments: plain_segments(&new_meta[new].display),
+    }
+}
+
+fn plain_segments(text: &str) -> Vec<Segment> {
+    vec![Segment {
+        text: text.to_string(),
+        emphasis: false,
+    }]
+}
+
+fn build_rows(specs: &[RowSpec], old_meta: &[LineMeta], new_meta: &[LineMeta]) -> Vec<DiffRow> {
+    let mut rows = Vec::with_capacity(specs.len());
+    let mut next_old = 0;
+    let mut next_new = 0;
+
+    for spec in specs {
+        flush_ignored(
+            &mut rows,
+            old_meta,
+            new_meta,
+            &mut next_old,
+            &mut next_new,
+            spec.old,
+            spec.new,
+        );
+        rows.push(DiffRow {
+            left: side_for(spec.old, spec.left_kind, &spec.left_segments, old_meta),
+            right: side_for(spec.new, spec.right_kind, &spec.right_segments, new_meta),
+        });
+        if let Some(index) = spec.old {
+            next_old = index + 1;
+        }
+        if let Some(index) = spec.new {
+            next_new = index + 1;
+        }
+    }
+
+    // Blank lines excluded from the comparison still appear as neutral rows so
+    // the displayed text and line numbers remain complete.
+    flush_ignored(
+        &mut rows,
+        old_meta,
+        new_meta,
+        &mut next_old,
+        &mut next_new,
+        Some(old_meta.len()),
+        Some(new_meta.len()),
+    );
+    rows
+}
+
+fn flush_ignored(
+    rows: &mut Vec<DiffRow>,
+    old_meta: &[LineMeta],
+    new_meta: &[LineMeta],
+    next_old: &mut usize,
+    next_new: &mut usize,
+    old_until: Option<usize>,
+    new_until: Option<usize>,
+) {
+    let mut old_pending = Vec::new();
+    let mut new_pending = Vec::new();
+
+    if let Some(until) = old_until {
+        while *next_old < until {
+            let line = &old_meta[*next_old];
+            if line.compared {
+                break;
+            }
+            old_pending.push(*next_old);
+            *next_old += 1;
+        }
+    }
+    if let Some(until) = new_until {
+        while *next_new < until {
+            let line = &new_meta[*next_new];
+            if line.compared {
+                break;
+            }
+            new_pending.push(*next_new);
+            *next_new += 1;
+        }
+    }
+
+    for index in 0..old_pending.len().max(new_pending.len()) {
+        let left = old_pending
+            .get(index)
+            .map(|&index| neutral_side(&old_meta[index]))
+            .unwrap_or_default();
+        let right = new_pending
+            .get(index)
+            .map(|&index| neutral_side(&new_meta[index]))
+            .unwrap_or_default();
+        rows.push(DiffRow { left, right });
+    }
+}
+
+fn side_for(
+    index: Option<usize>,
+    kind: SideKind,
+    segments: &[Segment],
+    meta: &[LineMeta],
+) -> DiffSide {
+    match index {
+        Some(index) => {
+            let line = &meta[index];
+            DiffSide {
+                number: Some(line.number),
+                kind,
+                text: line.display.clone(),
+                segments: segments.to_vec(),
+            }
+        }
+        None => DiffSide::default(),
+    }
+}
+
+fn neutral_side(line: &LineMeta) -> DiffSide {
+    DiffSide {
+        number: Some(line.number),
+        kind: SideKind::Equal,
+        text: line.display.clone(),
+        segments: plain_segments(&line.display),
     }
 }
 
@@ -224,7 +440,12 @@ fn segments_for(
         });
     }
 
-    if segments.iter().map(|segment| segment.text.len()).sum::<usize>() != expected.len() {
+    if segments
+        .iter()
+        .map(|segment| segment.text.len())
+        .sum::<usize>()
+        != expected.len()
+    {
         return vec![Segment {
             text: expected.to_string(),
             emphasis: false,
@@ -232,12 +453,6 @@ fn segments_for(
     }
 
     segments
-}
-
-fn strip_line_ending(line: &str) -> &str {
-    line.strip_suffix('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .unwrap_or(line)
 }
 
 #[cfg(test)]
@@ -323,5 +538,116 @@ mod tests {
         let diff = DiffResult::compute("alpha\r\nbravo\r\n", "alpha\nbravo\n");
         assert_eq!(diff.stats.unchanged, 2);
         assert_eq!(diff.stats.changed, 0);
+    }
+
+    #[test]
+    fn ignore_case_treats_case_only_changes_as_equal() {
+        let options = CompareOptions {
+            ignore_case: true,
+            ..Default::default()
+        };
+        let diff = DiffResult::compute_with_options("Hello World\n", "hello world\n", options);
+
+        assert_eq!(diff.stats.unchanged, 1);
+        assert_eq!(diff.stats.changed, 0);
+        assert_eq!(diff.rows.len(), 1);
+        assert_eq!(diff.rows[0].left.kind, SideKind::Equal);
+        assert_eq!(diff.rows[0].right.kind, SideKind::Equal);
+        assert_eq!(diff.rows[0].left.text, "Hello World");
+        assert_eq!(diff.rows[0].right.text, "hello world");
+        assert_eq!(emphasized(&diff.rows[0].left), "");
+        assert_eq!(emphasized(&diff.rows[0].right), "");
+
+        let strict = DiffResult::compute("Hello World\n", "hello world\n");
+        assert_eq!(strict.stats.changed, 1);
+    }
+
+    #[test]
+    fn ignore_whitespace_collapses_and_trims() {
+        let options = CompareOptions {
+            ignore_whitespace: true,
+            ignore_case: true,
+            ..Default::default()
+        };
+        let diff =
+            DiffResult::compute_with_options("  Hello\t  World  \n", "hello world\n", options);
+
+        assert_eq!(diff.stats.unchanged, 1);
+        assert_eq!(diff.stats.changed, 0);
+        assert_eq!(diff.rows[0].left.text, "  Hello\t  World  ");
+        assert_eq!(diff.rows[0].right.text, "hello world");
+        assert_eq!(emphasized(&diff.rows[0].left), "");
+    }
+
+    #[test]
+    fn ignore_blank_lines_keeps_original_numbers_and_display() {
+        let options = CompareOptions {
+            ignore_blank_lines: true,
+            ..Default::default()
+        };
+        let diff = DiffResult::compute_with_options("alpha\n\nbravo\n", "alpha\nbravo\n", options);
+
+        assert_eq!(diff.stats.unchanged, 2);
+        assert_eq!(diff.stats.added, 0);
+        assert_eq!(diff.stats.removed, 0);
+        assert_eq!(diff.stats.changed, 0);
+        assert_eq!(diff.rows.len(), 3);
+        assert_eq!(diff.rows[0].left.number, Some(1));
+        assert_eq!(diff.rows[0].right.number, Some(1));
+        assert_eq!(diff.rows[1].left.number, Some(2));
+        assert_eq!(diff.rows[1].left.kind, SideKind::Equal);
+        assert_eq!(diff.rows[1].right.kind, SideKind::Empty);
+        assert_eq!(diff.rows[2].left.number, Some(3));
+        assert_eq!(diff.rows[2].right.number, Some(2));
+        assert_eq!(diff.rows[2].left.text, "bravo");
+    }
+
+    #[test]
+    fn ignored_lines_do_not_shift_original_line_numbers() {
+        let options = CompareOptions {
+            ignore_case: true,
+            ..Default::default()
+        };
+        let diff =
+            DiffResult::compute_with_options("Alpha\nbravo\n", "ALPHA\nnew\nBRAVO\n", options);
+
+        assert_eq!(diff.stats.unchanged, 2);
+        assert_eq!(diff.stats.added, 1);
+        assert_eq!(diff.stats.changed, 0);
+        assert_eq!(diff.rows.len(), 3);
+        assert_eq!(diff.rows[0].left.number, Some(1));
+        assert_eq!(diff.rows[0].right.number, Some(1));
+        assert_eq!(diff.rows[0].left.text, "Alpha");
+        assert_eq!(diff.rows[0].right.text, "ALPHA");
+        assert_eq!(diff.rows[1].left.kind, SideKind::Empty);
+        assert_eq!(diff.rows[1].right.number, Some(2));
+        assert_eq!(diff.rows[1].right.text, "new");
+        assert_eq!(diff.rows[2].left.number, Some(2));
+        assert_eq!(diff.rows[2].right.number, Some(3));
+        assert_eq!(diff.rows[2].left.text, "bravo");
+        assert_eq!(diff.rows[2].right.text, "BRAVO");
+        assert_eq!(emphasized(&diff.rows[2].left), "");
+        assert_eq!(emphasized(&diff.rows[2].right), "");
+    }
+
+    #[test]
+    fn extra_blank_lines_are_ignored_on_both_sides() {
+        let options = CompareOptions {
+            ignore_blank_lines: true,
+            ..Default::default()
+        };
+        let diff =
+            DiffResult::compute_with_options("alpha\n\nbravo\n", "alpha\n\n\nBRAVO\n", options);
+
+        assert_eq!(diff.stats.added, 0);
+        assert_eq!(diff.stats.removed, 0);
+        assert_eq!(diff.stats.changed, 1);
+        assert_eq!(diff.rows.len(), 4);
+        assert_eq!(diff.rows[1].left.number, Some(2));
+        assert_eq!(diff.rows[1].right.number, Some(2));
+        assert_eq!(diff.rows[2].left.kind, SideKind::Empty);
+        assert_eq!(diff.rows[2].right.number, Some(3));
+        assert_eq!(diff.rows[3].left.number, Some(3));
+        assert_eq!(diff.rows[3].right.number, Some(4));
     }
 }
