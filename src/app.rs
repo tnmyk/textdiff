@@ -1,7 +1,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::link::Link;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Size};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -120,16 +120,10 @@ impl DiffApp {
         let can_compare = !self.original.read(cx).value().is_empty()
             || !self.modified.read(cx).value().is_empty();
 
-        let title = div()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child("Compare two versions");
-        let title = if narrow { title.text_lg() } else { title.text_xl() };
-
         let panes = if narrow {
             let selected = match self.mobile_pane {
                 MobilePane::Original => editor_card(
                     "Original",
-                    theme::RED,
                     self.original.clone(),
                     original_lines,
                     true,
@@ -137,7 +131,6 @@ impl DiffApp {
                 ),
                 MobilePane::Modified => editor_card(
                     "Modified",
-                    theme::GREEN,
                     self.modified.clone(),
                     modified_lines,
                     true,
@@ -162,7 +155,6 @@ impl DiffApp {
                 .gap_4()
                 .child(editor_card(
                     "Original",
-                    theme::RED,
                     self.original.clone(),
                     original_lines,
                     false,
@@ -170,7 +162,6 @@ impl DiffApp {
                 ))
                 .child(editor_card(
                     "Modified",
-                    theme::GREEN,
                     self.modified.clone(),
                     modified_lines,
                     false,
@@ -181,7 +172,6 @@ impl DiffApp {
         let compare = Button::new("compare")
             .primary()
             .label("Compare")
-            .with_size(if narrow { Size::Medium } else { Size::Large })
             .disabled(!can_compare)
             .on_click(cx.listener(|this, _, window, cx| this.compare(window, cx)));
         let example = Button::new("example")
@@ -257,29 +247,9 @@ impl DiffApp {
             .when(!narrow, |this| {
                 this.child(
                     div()
-                        .flex()
-                        .items_end()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(title)
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .text_sm()
-                                        .text_color(muted_foreground)
-                                        .child("Paste text into both panes, then compare. Nothing leaves this device."),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted_foreground)
-                                .child("Line + word diff"),
-                        ),
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .child("Compare two versions. Nothing leaves this device."),
                 )
             })
             .child(panes)
@@ -296,12 +266,10 @@ impl DiffApp {
     ) -> Div {
         let group_box = cx.theme().group_box;
         let muted = cx.theme().muted;
-        let border = cx.theme().border;
         let muted_foreground = cx.theme().muted_foreground;
         let tab = |id: &'static str,
                    label: &'static str,
                    count: usize,
-                   dot: u32,
                    selected: bool,
                    cx: &mut Context<'_, Self>| {
             div()
@@ -311,24 +279,24 @@ impl DiffApp {
                 .items_center()
                 .justify_center()
                 .gap_2()
-                .h(px(34.))
-                .rounded(px(8.))
+                .h(px(32.))
+                .rounded(px(6.))
                 .cursor_pointer()
                 .when(selected, |this| this.bg(group_box))
                 .when(!selected, |this| this.text_color(muted_foreground))
-                .child(
-                    div()
-                        .size(px(6.))
-                        .rounded(px(99.))
-                        .bg(theme::color(dot)),
-                )
                 .child(
                     div()
                         .text_sm()
                         .when(selected, |this| {
                             this.font_weight(FontWeight::MEDIUM)
                         })
-                        .child(format!("{label}  {count}")),
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(muted_foreground)
+                        .child(count.to_string()),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.mobile_pane = match id {
@@ -343,16 +311,13 @@ impl DiffApp {
             .flex()
             .items_center()
             .gap_1()
-            .p(px(3.))
-            .rounded(px(11.))
-            .border_1()
-            .border_color(border)
+            .p(px(2.))
+            .rounded(px(8.))
             .bg(muted)
             .child(tab(
                 "tab-original",
                 "Original",
                 original_lines,
-                theme::RED,
                 self.mobile_pane == MobilePane::Original,
                 cx,
             ))
@@ -360,7 +325,6 @@ impl DiffApp {
                 "tab-modified",
                 "Modified",
                 modified_lines,
-                theme::GREEN,
                 self.mobile_pane == MobilePane::Modified,
                 cx,
             ))
@@ -396,9 +360,9 @@ impl DiffApp {
                 .h(px(40.))
                 .border_b_1()
                 .border_color(theme.border)
-                .child(panel_header("Original", theme::RED, cx))
+                .child(panel_header("Original", cx))
                 .child(div().w(px(1.)).h_full().bg(theme.border))
-                .child(panel_header("Modified", theme::GREEN, cx))
+                .child(panel_header("Modified", cx))
                 .into_any_element()
         };
 
@@ -453,18 +417,18 @@ impl DiffApp {
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap_2()
+                            .gap_3()
                             .when(stats.added > 0, |this| {
-                                this.child(stat_pill("added", stats.added, theme::GREEN))
+                                this.child(stat("added", stats.added, theme::GREEN))
                             })
                             .when(stats.removed > 0, |this| {
-                                this.child(stat_pill("removed", stats.removed, theme::RED))
+                                this.child(stat("removed", stats.removed, theme::RED))
                             })
                             .when(stats.changed > 0, |this| {
-                                this.child(stat_pill("changed", stats.changed, theme::ACCENT))
+                                this.child(stat("changed", stats.changed, theme::ACCENT))
                             })
                             .when(stats.unchanged > 0, |this| {
-                                this.child(stat_pill("unchanged", stats.unchanged, theme::MUTED))
+                                this.child(stat("unchanged", stats.unchanged, theme::MUTED))
                             }),
                     ),
             )
@@ -474,7 +438,7 @@ impl DiffApp {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .rounded(px(14.))
+                    .rounded(px(10.))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.group_box)
@@ -523,7 +487,7 @@ fn header(cx: &App, narrow: bool) -> Div {
         .flex()
         .items_center()
         .justify_between()
-        .h(if narrow { px(56.) } else { px(64.) })
+        .h(if narrow { px(52.) } else { px(60.) })
         .px(if narrow { px(16.) } else { px(28.) })
         .border_b_1()
         .border_color(theme.border)
@@ -534,35 +498,9 @@ fn header(cx: &App, narrow: bool) -> Div {
                 .gap_3()
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(30.))
-                        .rounded(px(9.))
-                        .bg(theme.primary)
-                        .text_color(theme.primary_foreground)
-                        .text_sm()
-                        .font_weight(FontWeight::BOLD)
-                        .child("d"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("diff"),
-                        )
-                        .when(!narrow, |this| {
-                            this.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child("compare text, locally"),
-                            )
-                        }),
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Text Diff"),
                 ),
         )
         .child(
@@ -570,14 +508,6 @@ fn header(cx: &App, narrow: bool) -> Div {
                 .flex()
                 .items_center()
                 .gap_4()
-                .when(!narrow, |this| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("No upload. No account."),
-                    )
-                })
                 .child(
                     Link::new("github")
                         .href("https://github.com/tnmyk/diff")
@@ -593,17 +523,16 @@ fn footer(cx: &App) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .h(px(36.))
+        .h(px(32.))
         .border_t_1()
         .border_color(theme.border)
-        .text_xs()
+        .text_size(px(11.))
         .text_color(theme.muted_foreground)
-        .child("All processing stays on this device.")
+        .child("Local only. Nothing is uploaded.")
 }
 
 fn editor_card(
     label: &'static str,
-    dot: u32,
     state: Entity<TextareaState>,
     lines: usize,
     compact: bool,
@@ -616,7 +545,7 @@ fn editor_card(
         .w_full()
         .min_w_0()
         .min_h_0()
-        .rounded(px(14.))
+        .rounded(px(10.))
         .border_1()
         .border_color(theme.border)
         .bg(theme.group_box)
@@ -633,20 +562,13 @@ fn editor_card(
                     .border_color(theme.border)
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().size(px(7.)).rounded(px(99.)).bg(theme::color(dot)))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(label),
-                            ),
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(label),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(11.))
                             .text_color(theme.muted_foreground)
                             .child(format!("{lines} lines")),
                     ),
@@ -670,16 +592,17 @@ fn editor_card(
     card.flex_1().min_h_0()
 }
 
-fn panel_header(label: &'static str, dot: u32, cx: &App) -> Div {
+fn panel_header(label: &'static str, cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .flex()
         .flex_1()
         .items_center()
-        .gap_2()
+        .h_full()
         .px(px(14.))
-        .child(div().size(px(7.)).rounded(px(99.)).bg(theme::color(dot)))
-        .child(div().text_xs().text_color(theme.foreground).child(label))
+        .text_size(px(11.))
+        .text_color(theme.muted_foreground)
+        .child(label)
 }
 
 fn empty_state(cx: &App) -> Div {
@@ -749,7 +672,7 @@ fn unified_row(side: &DiffSide, cx: &App) -> Div {
         row = row.bg(bg);
     }
     if let Some(bar) = bar {
-        row = row.child(div().w(px(3.)).h_full().bg(bar));
+        row = row.child(div().w(px(2.)).h_full().bg(bar));
     }
 
     row.child(
@@ -829,7 +752,7 @@ fn side_cell(side: &DiffSide, is_left: bool, cx: &App) -> Div {
 
     if is_left {
         if let Some(bar) = bar {
-            cell = cell.child(div().w(px(3.)).h_full().bg(bar));
+            cell = cell.child(div().w(px(2.)).h_full().bg(bar));
         }
     }
 
@@ -863,7 +786,7 @@ fn side_cell(side: &DiffSide, is_left: bool, cx: &App) -> Div {
 
     if !is_left {
         if let Some(bar) = bar {
-            cell = cell.child(div().w(px(3.)).h_full().bg(bar));
+            cell = cell.child(div().w(px(2.)).h_full().bg(bar));
         }
     }
 
@@ -895,17 +818,13 @@ fn styled_line(side: &DiffSide) -> StyledText {
     StyledText::new(side.text.clone()).with_highlights(highlights)
 }
 
-fn stat_pill(label: &'static str, count: usize, tint: u32) -> Div {
+fn stat(label: &'static str, count: usize, tint: u32) -> Div {
     let color = theme::color(tint);
     div()
         .flex()
         .items_center()
         .gap_1()
-        .px(px(10.))
-        .py(px(4.))
-        .rounded(px(99.))
-        .bg(color.opacity(0.12))
-        .text_color(color)
-        .text_xs()
-        .child(format!("{count} {label}"))
+        .text_size(px(11.))
+        .child(div().text_color(color).child(count.to_string()))
+        .child(div().text_color(theme::color(theme::MUTED)).child(label))
 }

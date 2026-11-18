@@ -1,4 +1,4 @@
-# diff
+# Text Diff
 
 Live: **[diff.tanmay.sh](https://diff.tanmay.sh)**
 

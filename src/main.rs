@@ -33,7 +33,7 @@ fn launch(cx: &mut App) {
             cx,
         ))),
         titlebar: Some(TitlebarOptions {
-            title: Some("diff".into()),
+            title: Some("Text Diff".into()),
             ..Default::default()
         }),
         ..Default::default()
