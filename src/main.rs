@@ -10,6 +10,8 @@ use std::borrow::Cow;
 use app::DiffApp;
 use gpui_kit::*;
 
+gpui_kit::assets::icon_assets!(AppAssets, [ArrowLeftRight, Trash]);
+
 fn load_fonts(cx: &mut App) {
     cx.text_system()
         .add_fonts(vec![
@@ -51,7 +53,9 @@ fn launch(cx: &mut App) {
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {
-    gpui_kit::application().run(launch);
+    gpui_kit::application()
+        .with_assets(AppAssets)
+        .run(launch);
 }
 
 #[cfg(target_family = "wasm")]
@@ -70,7 +74,7 @@ fn main() {
         false,
         WebBackendPreference::Auto,
     ));
-    let app = Application::with_platform(platform);
+    let app = Application::with_platform(platform).with_assets(AppAssets);
     let handle = app.run_embedded(launch);
 
     APPLICATION.with(|application| {

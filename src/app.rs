@@ -1,6 +1,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::link::Link;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -114,7 +115,6 @@ impl DiffApp {
     }
 
     fn edit_view(&self, _window: &mut Window, cx: &mut Context<'_, Self>, narrow: bool) -> AnyElement {
-        let muted_foreground = cx.theme().muted_foreground;
         let original_lines = self.line_count(&self.original, cx);
         let modified_lines = self.line_count(&self.modified, cx);
         let can_compare = !self.original.read(cx).value().is_empty()
@@ -180,10 +180,12 @@ impl DiffApp {
             .on_click(cx.listener(|this, _, window, cx| this.load_example(window, cx)));
         let swap = Button::new("swap")
             .ghost()
+            .icon(IconName::ArrowLeftRight)
             .label("Swap")
             .on_click(cx.listener(|this, _, window, cx| this.swap(window, cx)));
         let clear = Button::new("clear")
-            .ghost()
+            .danger()
+            .icon(IconName::Trash)
             .label("Clear all")
             .disabled(!can_compare)
             .on_click(cx.listener(|this, _, window, cx| this.clear(window, cx)));
@@ -244,14 +246,6 @@ impl DiffApp {
             .pt(if narrow { px(18.) } else { px(26.) })
             .pb(if narrow { px(12.) } else { px(18.) })
             .gap_4()
-            .when(!narrow, |this| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted_foreground)
-                        .child("Compare two versions. Nothing leaves this device."),
-                )
-            })
             .child(panes)
             .child(actions);
 
