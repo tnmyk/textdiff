@@ -1387,7 +1387,9 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "gpui-pre",
+ "js-sys",
  "similar 3.1.1",
+ "wasm-bindgen",
 ]
 
 [[package]]

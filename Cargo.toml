@@ -10,6 +10,10 @@ similar = "3.1.1"
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
 
+[target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = "0.3.107"
+wasm-bindgen = "0.2.130"
+
 [profile.dev.package]
 gpui-pre = { opt-level = 1 }
 gpui-component = { opt-level = 1 }

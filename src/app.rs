@@ -9,6 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{EntityInputHandler as _, *};
 
 use crate::diff::{CompareOptions, DiffResult, DiffRow, DiffSide, SideKind};
+use crate::file_io::{self, LoadedText};
 use crate::theme;
 
 mod actions {
@@ -56,6 +57,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Edit,
     Diff,
@@ -74,11 +76,59 @@ enum DiffItem {
     Gap { start: usize, end: usize },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileTarget {
+    Original,
+    Modified,
+}
+
+impl FileTarget {
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "original" => Some(Self::Original),
+            "modified" => Some(Self::Modified),
+            _ => None,
+        }
+    }
+
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn id(self) -> &'static str {
+        match self {
+            Self::Original => "original",
+            Self::Modified => "modified",
+        }
+    }
+
+    fn button_id(self) -> &'static str {
+        match self {
+            Self::Original => "open-original",
+            Self::Modified => "open-modified",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Original => "Original",
+            Self::Modified => "Modified",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FileInfo {
+    name: String,
+    bytes: usize,
+}
+
 pub struct DiffApp {
     mode: Mode,
     focus_handle: FocusHandle,
     original: Entity<TextareaState>,
     modified: Entity<TextareaState>,
+    original_file: Option<FileInfo>,
+    modified_file: Option<FileInfo>,
+    file_error: Option<SharedString>,
     diff: DiffResult,
     options: CompareOptions,
     mobile_pane: MobilePane,
@@ -102,13 +152,15 @@ impl DiffApp {
         focus_handle.focus(window, cx);
 
         let subscriptions = vec![
-            cx.subscribe(&original, |_, _, event: &InputEvent, cx| {
+            cx.subscribe(&original, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.original_file = None;
                     cx.notify();
                 }
             }),
-            cx.subscribe(&modified, |_, _, event: &InputEvent, cx| {
+            cx.subscribe(&modified, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.modified_file = None;
                     cx.notify();
                 }
             }),
@@ -120,6 +172,9 @@ impl DiffApp {
             focus_handle,
             original,
             modified,
+            original_file: None,
+            modified_file: None,
+            file_error: None,
             diff: DiffResult::default(),
             options: CompareOptions::default(),
             mobile_pane: MobilePane::Original,
@@ -192,6 +247,7 @@ impl DiffApp {
 
         original_state.update(cx, |state, cx| state.set_value(modified, window, cx));
         modified_state.update(cx, |state, cx| state.set_value(original, window, cx));
+        std::mem::swap(&mut self.original_file, &mut self.modified_file);
         self.diff = DiffResult::default();
         self.reset_navigation();
         self.mode = Mode::Edit;
@@ -204,6 +260,9 @@ impl DiffApp {
         let modified_state = self.modified.clone();
         original_state.update(cx, |state, cx| state.set_value("", window, cx));
         modified_state.update(cx, |state, cx| state.set_value("", window, cx));
+        self.original_file = None;
+        self.modified_file = None;
+        self.file_error = None;
         self.diff = DiffResult::default();
         self.reset_navigation();
         self.mode = Mode::Edit;
@@ -219,9 +278,142 @@ impl DiffApp {
 
         original_state.update(cx, |state, cx| state.set_value(original, window, cx));
         modified_state.update(cx, |state, cx| state.set_value(modified, window, cx));
+        self.original_file = None;
+        self.modified_file = None;
+        self.file_error = None;
         self.mode = Mode::Edit;
         self.focus_handle.focus(window, cx);
         cx.notify();
+    }
+
+    fn open_file(&mut self, target: FileTarget, cx: &mut Context<'_, Self>) {
+        self.file_error = None;
+        cx.notify();
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("Open a text file".into()),
+            });
+
+            cx.spawn(async move |this, cx| {
+                let selection = match receiver.await {
+                    Ok(selection) => selection,
+                    Err(_) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.set_file_error("The file picker closed unexpectedly.", cx)
+                        });
+                        return;
+                    }
+                };
+
+                match selection {
+                    Ok(Some(paths)) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            let loaded = file_io::read_text_file(&path);
+                            let _ = this.update_in(cx, move |app, window, cx| match loaded {
+                                Ok(loaded) => app.apply_loaded(target, loaded, window, cx),
+                                Err(error) => app.set_file_error(error, cx),
+                            });
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.set_file_error(
+                                format!("Could not open the file picker: {error}"),
+                                cx,
+                            )
+                        });
+                    }
+                }
+            })
+            .detach();
+        }
+
+        #[cfg(target_family = "wasm")]
+        {
+            if let Err(error) = file_io::web::open_picker(target.id()) {
+                self.set_file_error(error, cx);
+            }
+        }
+    }
+
+    /// Load text supplied by the web file bridge.
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    pub(crate) fn load_text_named(
+        &mut self,
+        target: FileTarget,
+        name: String,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match LoadedText::from_text(&name, text) {
+            Ok(loaded) => self.apply_loaded(target, loaded, window, cx),
+            Err(error) => self.set_file_error(error, cx),
+        }
+    }
+
+    fn apply_loaded(
+        &mut self,
+        target: FileTarget,
+        loaded: LoadedText,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let LoadedText { name, text, bytes } = loaded;
+        let state = match target {
+            FileTarget::Original => self.original.clone(),
+            FileTarget::Modified => self.modified.clone(),
+        };
+        state.update(cx, |state, cx| state.set_value(text, window, cx));
+
+        let info = FileInfo { name, bytes };
+        match target {
+            FileTarget::Original => self.original_file = Some(info),
+            FileTarget::Modified => self.modified_file = Some(info),
+        }
+
+        self.file_error = None;
+        self.diff = DiffResult::default();
+        self.mode = Mode::Edit;
+        self.mobile_pane = match target {
+            FileTarget::Original => MobilePane::Original,
+            FileTarget::Modified => MobilePane::Modified,
+        };
+        cx.notify();
+    }
+
+    pub(crate) fn set_file_error(
+        &mut self,
+        message: impl Into<SharedString>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.file_error = Some(message.into());
+        cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn load_dropped(
+        &mut self,
+        target: FileTarget,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(path) = paths.paths().first() else {
+            self.set_file_error("The drop did not contain a file.", cx);
+            return;
+        };
+
+        match file_io::read_text_file(path) {
+            Ok(loaded) => self.apply_loaded(target, loaded, window, cx),
+            Err(error) => self.set_file_error(error, cx),
+        }
     }
 
     fn line_count(&self, state: &Entity<TextareaState>, cx: &App) -> usize {
@@ -288,12 +480,22 @@ impl DiffApp {
 
         let panes = if narrow {
             let selected = match self.mobile_pane {
-                MobilePane::Original => {
-                    editor_card("Original", self.original.clone(), original_lines, true, cx)
-                }
-                MobilePane::Modified => {
-                    editor_card("Modified", self.modified.clone(), modified_lines, true, cx)
-                }
+                MobilePane::Original => editor_card(
+                    FileTarget::Original,
+                    self.original.clone(),
+                    original_lines,
+                    true,
+                    self.original_file.as_ref(),
+                    cx,
+                ),
+                MobilePane::Modified => editor_card(
+                    FileTarget::Modified,
+                    self.modified.clone(),
+                    modified_lines,
+                    true,
+                    self.modified_file.as_ref(),
+                    cx,
+                ),
             };
 
             div()
@@ -312,17 +514,19 @@ impl DiffApp {
                 .min_h_0()
                 .gap_4()
                 .child(editor_card(
-                    "Original",
+                    FileTarget::Original,
                     self.original.clone(),
                     original_lines,
                     false,
+                    self.original_file.as_ref(),
                     cx,
                 ))
                 .child(editor_card(
-                    "Modified",
+                    FileTarget::Modified,
                     self.modified.clone(),
                     modified_lines,
                     false,
+                    self.modified_file.as_ref(),
                     cx,
                 ))
         };
@@ -389,6 +593,7 @@ impl DiffApp {
                 .child(div().flex().items_center().gap_2().child(swap).child(clear))
         };
 
+        let file_error = self.file_error.clone();
         let content = div()
             .flex()
             .flex_col()
@@ -402,6 +607,9 @@ impl DiffApp {
             .gap_4()
             .child(panes)
             .child(self.options_row(cx))
+            .when_some(file_error, |this, message| {
+                this.child(file_error_banner(&message))
+            })
             .child(actions);
 
         content.into_any_element()
@@ -853,13 +1061,17 @@ fn footer(cx: &App) -> Div {
 }
 
 fn editor_card(
-    label: &'static str,
+    target: FileTarget,
     state: Entity<TextareaState>,
     lines: usize,
-    compact: bool,
-    cx: &App,
+    narrow: bool,
+    file: Option<&FileInfo>,
+    cx: &mut Context<'_, DiffApp>,
 ) -> Div {
-    let theme = cx.theme();
+    let border = cx.theme().border;
+    let group_box = cx.theme().group_box;
+    let muted_foreground = cx.theme().muted_foreground;
+
     let card = div()
         .flex()
         .flex_col()
@@ -868,43 +1080,81 @@ fn editor_card(
         .min_h_0()
         .rounded(px(10.))
         .border_1()
-        .border_color(theme.border)
-        .bg(theme.group_box)
+        .border_color(border)
+        .bg(group_box)
         .overflow_hidden()
-        .when(!compact, |this| {
-            this.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .h(px(44.))
-                    .px(px(16.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme.muted_foreground)
-                            .child(format!("{lines} lines")),
-                    ),
-            )
-        })
         .child(
-            div().flex_1().min_h_0().p(px(12.)).child(
-                Textarea::new(&state)
-                    .w_full()
-                    .h(relative(1.))
-                    .appearance(false)
-                    .bordered(false)
-                    .aria_label(label),
-            ),
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .h(px(44.))
+                .px(px(16.))
+                .border_b_1()
+                .border_color(border)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .child(target.label()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when_some(file, |this, file| {
+                            this.child(
+                                div()
+                                    .max_w(if narrow { px(140.) } else { px(220.) })
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.))
+                                    .text_color(muted_foreground)
+                                    .child(format!(
+                                        "{} · {}",
+                                        file.name,
+                                        file_io::format_size(file.bytes)
+                                    )),
+                            )
+                        })
+                        .when(!narrow, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(muted_foreground)
+                                    .child(format!("{lines} lines")),
+                            )
+                        })
+                        .child(
+                            Button::new(target.button_id())
+                                .ghost()
+                                .label("Open")
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.open_file(target, cx)),
+                                ),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .p(px(12.))
+                .child(
+                    Textarea::new(&state)
+                        .w_full()
+                        .h(relative(1.))
+                        .appearance(false)
+                        .bordered(false)
+                        .aria_label(target.label()),
+                ),
         );
+
+    #[cfg(not(target_family = "wasm"))]
+    let card = card.on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+        this.load_dropped(target, paths, window, cx);
+    }));
 
     card.flex_1().min_h_0()
 }
@@ -920,6 +1170,23 @@ fn panel_header(label: &'static str, cx: &App) -> Div {
         .text_size(px(11.))
         .text_color(theme.muted_foreground)
         .child(label)
+}
+
+fn file_error_banner(message: &str) -> Div {
+    let red = theme::color(theme::RED);
+    let red_bg = theme::color(theme::RED_BG);
+    div()
+        .flex()
+        .items_center()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(red)
+        .bg(red_bg)
+        .px(px(12.))
+        .py(px(8.))
+        .text_sm()
+        .text_color(red)
+        .child(message.to_string())
 }
 
 fn empty_state(cx: &App) -> Div {
