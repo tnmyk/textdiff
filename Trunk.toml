@@ -1,5 +1,6 @@
 [build]
 filehash = false
+no_sri = true
 
 [serve]
 addresses = ["127.0.0.1"]

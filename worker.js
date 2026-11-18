@@ -1,7 +1,7 @@
 const WASM_PATH = "/diff_bg.wasm";
 const WASM_BR_PATH = "/diff_bg.wasm.br";
 // Fixed filename, so keep the cache window short enough to pick up deploys.
-const WASM_CACHE_CONTROL = "public, max-age=86400";
+const WASM_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 function acceptsBrotli(request) {
   const header = request.headers.get("Accept-Encoding");
@@ -61,6 +61,7 @@ async function serveOriginalWasm(request, env) {
   const headers = new Headers(response.headers);
   headers.set("Content-Type", "application/wasm");
   headers.set("Cache-Control", WASM_CACHE_CONTROL);
+  headers.set("Vary", "Accept-Encoding");
   headers.delete("Content-Length");
 
   return new Response(response.body, { status: 200, headers });

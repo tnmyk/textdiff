@@ -27,7 +27,7 @@ jobs:
           version: 'latest'
 
       - name: Build WebAssembly
-        run: trunk build --release
+        run: trunk build --release --no-sri
 
       - name: Install brotli
         run: |

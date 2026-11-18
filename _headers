@@ -3,7 +3,7 @@
   Cross-Origin-Embedder-Policy: require-corp
 
 /diff_bg.wasm
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=0, must-revalidate
 
 /diff_bg.wasm.br
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=0, must-revalidate
