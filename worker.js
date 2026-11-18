@@ -5,7 +5,9 @@ const WASM_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 function acceptsBrotli(request) {
   const header = request.headers.get("Accept-Encoding");
-  if (!header) return false;
+  // Cloudflare may strip Accept-Encoding from the Worker request. This app
+  // already requires WebGPU/WebGL2, whose browsers all support brotli.
+  if (!header) return true;
 
   return header.split(",").some((entry) => {
     const [coding, ...params] = entry.trim().toLowerCase().split(";");
