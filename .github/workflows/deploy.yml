@@ -29,11 +29,15 @@ jobs:
       - name: Build WebAssembly
         run: trunk build --release
 
+      - name: Install brotli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y brotli
+
       - name: Optimize WASM
         run: |
           npm install -g wasm-opt
-          wasm-opt -Oz --all-features --disable-compact-imports \
-            -o dist/diff_bg.wasm dist/diff_bg.wasm
+          ./scripts/optimize-wasm.sh
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3

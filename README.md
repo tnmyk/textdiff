@@ -51,7 +51,9 @@ Optionally shrink the wasm before deploying. `binaryen` provides `wasm-opt`:
 ./scripts/optimize-wasm.sh
 ```
 
-The deploy workflow runs this pass.
+The deploy workflow runs this pass. It also writes `dist/diff_bg.wasm.br`,
+which the Worker serves to browsers that accept brotli; other clients get the
+original wasm.
 
 ## Deploy
 

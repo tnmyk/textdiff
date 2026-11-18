@@ -4,3 +4,7 @@ compatibility_date = "2024-07-01"
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
+# Let the Worker choose between the precompressed `.br` file and the original
+# wasm. Every other route keeps the default assets-first behavior.
+run_worker_first = ["/diff_bg.wasm"]
