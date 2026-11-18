@@ -39,6 +39,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("p", actions::PreviousChange, Some(DIFF_KEY_CONTEXT)),
     ]);
 
+    #[allow(unused_mut)]
     let mut bindings = vec![
         // text-compare parity shortcut
         KeyBinding::new("ctrl-alt-c", Compare, Some(KEY_BINDING_CONTEXT)),
