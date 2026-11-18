@@ -42,6 +42,23 @@ pub struct DiffRow {
     pub right: DiffSide,
 }
 
+impl DiffRow {
+    /// True when either side of the row has an added or removed line.
+    pub fn is_change(&self) -> bool {
+        matches!(self.left.kind, SideKind::Removed | SideKind::Added)
+            || matches!(self.right.kind, SideKind::Removed | SideKind::Added)
+    }
+}
+
+/// A contiguous run of changed rows.
+///
+/// `start` is inclusive and `end` is exclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChangeHunk {
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DiffResult {
     pub rows: Vec<DiffRow>,
@@ -49,6 +66,29 @@ pub struct DiffResult {
 }
 
 impl DiffResult {
+    /// Group contiguous changed rows into hunks for navigation and collapsing.
+    pub fn change_hunks(&self) -> Vec<ChangeHunk> {
+        let mut hunks = Vec::new();
+        let mut start = None;
+
+        for (index, row) in self.rows.iter().enumerate() {
+            if row.is_change() {
+                start.get_or_insert(index);
+            } else if let Some(start) = start.take() {
+                hunks.push(ChangeHunk { start, end: index });
+            }
+        }
+
+        if let Some(start) = start {
+            hunks.push(ChangeHunk {
+                start,
+                end: self.rows.len(),
+            });
+        }
+
+        hunks
+    }
+
     pub fn compute(original: &str, modified: &str) -> Self {
         // Treat CRLF and lone CR as ordinary line endings so a checkout on a
         // different platform does not show every line as changed.
@@ -224,7 +264,12 @@ fn segments_for(
         });
     }
 
-    if segments.iter().map(|segment| segment.text.len()).sum::<usize>() != expected.len() {
+    if segments
+        .iter()
+        .map(|segment| segment.text.len())
+        .sum::<usize>()
+        != expected.len()
+    {
         return vec![Segment {
             text: expected.to_string(),
             emphasis: false,
@@ -278,11 +323,13 @@ mod tests {
         assert_eq!(diff.rows.len(), 1);
         assert_eq!(diff.rows[0].left.kind, SideKind::Removed);
         assert_eq!(diff.rows[0].right.kind, SideKind::Added);
-        assert!(diff.rows[0]
-            .right
-            .segments
-            .iter()
-            .any(|segment| segment.emphasis && segment.text.contains("brave")));
+        assert!(
+            diff.rows[0]
+                .right
+                .segments
+                .iter()
+                .any(|segment| segment.emphasis && segment.text.contains("brave"))
+        );
         assert_eq!(diff.rows[0].right.text, "hello brave world");
     }
 
@@ -291,5 +338,39 @@ mod tests {
         let diff = DiffResult::compute("alpha\r\nbravo\r\n", "alpha\nbravo\n");
         assert_eq!(diff.stats.unchanged, 2);
         assert_eq!(diff.stats.changed, 0);
+    }
+
+    #[test]
+    fn change_hunks_group_contiguous_changed_rows() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n",
+            "alpha\nBRAVO\ncharlie\ndelta\nECHO\nfoxtrot\n",
+        );
+        assert_eq!(
+            diff.change_hunks(),
+            vec![
+                ChangeHunk { start: 1, end: 2 },
+                ChangeHunk { start: 4, end: 5 },
+            ]
+        );
+    }
+
+    #[test]
+    fn adjacent_insertions_and_deletions_share_one_hunk() {
+        let diff = DiffResult::compute(
+            "alpha\nbravo\ncharlie\n",
+            "alpha\nnew one\nnew two\ncharlie\n",
+        );
+        let hunks = diff.change_hunks();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].start, 1);
+        assert_eq!(hunks[0].end, 3);
+        assert_eq!(hunks[0].end - hunks[0].start, 2);
+    }
+
+    #[test]
+    fn identical_diff_has_no_change_hunks() {
+        let diff = DiffResult::compute("alpha\nbravo\n", "alpha\nbravo\n");
+        assert!(diff.change_hunks().is_empty());
     }
 }
