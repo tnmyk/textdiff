@@ -38,6 +38,9 @@ async function serveBrotliWasm(request, env, url) {
 
   return new Response(asset.body, {
     headers: brotliHeaders(asset.headers.get("ETag")),
+    // The body is already brotli-compressed. Without this, the Workers runtime
+    // compresses it again according to Content-Encoding, producing br(br(wasm)).
+    encodeBody: "manual",
   });
 }
 
